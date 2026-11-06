@@ -30,3 +30,49 @@ body {
   background: #334155;
 }
 
+/* Syntax Highlighting for Code Blocks (highlight.js dark theme) */
+.hljs {
+  color: #e2e8f0;
+  background: transparent;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-subst {
+  color: #f472b6; /* pink-400 */
+  font-weight: 600;
+}
+.hljs-string,
+.hljs-title,
+.hljs-section,
+.hljs-attribute,
+.hljs-literal,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-type,
+.hljs-addition {
+  color: #34d399; /* emerald-400 */
+}
+.hljs-comment,
+.hljs-quote,
+.hljs-deletion,
+.hljs-meta {
+  color: #64748b; /* slate-500 */
+  font-style: italic;
+}
+.hljs-number,
+.hljs-regexp,
+.hljs-link {
+  color: #fb923c; /* orange-400 */
+}
+.hljs-variable,
+.hljs-params {
+  color: #e2e8f0; /* slate-200 */
+}
+.hljs-function,
+.hljs-class .hljs-title {
+  color: #60a5fa; /* blue-400 */
+}
+.hljs-built_in,
+.hljs-builtin-name {
+  color: #818cf8; /* indigo-400 */
+}
