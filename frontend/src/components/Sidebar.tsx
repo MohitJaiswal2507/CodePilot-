@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { useRouter } from "next/navigation";
 import { 
   LayoutDashboard, 
   BookOpen, 
@@ -9,8 +10,12 @@ import {
   ShieldCheck, 
   Cpu, 
   Settings,
-  Sparkles
+  Sparkles,
+  LogOut,
+  Loader2
 } from "lucide-react";
+import { authClient } from "@/lib/auth/client";
+import { setApiAuthToken, clearApiAuthToken } from "@/services/api";
 
 interface SidebarProps {
   currentTab: string;
@@ -18,6 +23,36 @@ interface SidebarProps {
 }
 
 export function Sidebar({ currentTab, onSelectTab }: SidebarProps) {
+  const router = useRouter();
+  const [isSigningOut, setIsSigningOut] = React.useState(false);
+
+  // Retrieve reactive session from Better Auth React adapter
+  const sessionHook = typeof authClient?.useSession === "function" ? authClient.useSession() : { data: null, isPending: false };
+  const user = sessionHook?.data?.user;
+  const isPending = sessionHook?.isPending;
+
+  const displayName = user?.name || "Developer";
+  const displayEmail = user?.email || "Workspace Active";
+  const userInitial = (displayName.charAt(0) || "D").toUpperCase();
+
+  const handleSignOut = async () => {
+    setIsSigningOut(true);
+    try {
+      await authClient.signOut();
+      clearApiAuthToken();
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("codepilot_session_id");
+        localStorage.removeItem("codepilot_auth_token");
+        localStorage.removeItem("codepilot_active_tab");
+      }
+      router.push("/login");
+      router.refresh();
+    } catch (err) {
+      console.error("Sign out failed:", err);
+      setIsSigningOut(false);
+    }
+  };
+
   const navItems = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "ai-tutor", label: "AI Learning Tutor", icon: BookOpen },
@@ -58,7 +93,7 @@ export function Sidebar({ currentTab, onSelectTab }: SidebarProps) {
               <button
                 key={item.id}
                 onClick={() => onSelectTab(item.id)}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-colors ${
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                   isActive
                     ? "bg-indigo-600/15 text-indigo-300 border border-indigo-500/20"
                     : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
@@ -74,22 +109,45 @@ export function Sidebar({ currentTab, onSelectTab }: SidebarProps) {
         </div>
       </div>
 
-      {/* User Profile Footer */}
-      <div className="p-4 border-t border-slate-800/80 space-y-3">
+      {/* User Profile & Sign Out Footer */}
+      <div className="p-4 border-t border-slate-800/80 space-y-2">
         <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-xs font-semibold text-slate-200">
-              MJ
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-full bg-indigo-900/50 border border-indigo-600/40 flex items-center justify-center text-xs font-semibold text-indigo-200 shrink-0">
+              {isPending ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-300" />
+              ) : (
+                userInitial
+              )}
             </div>
-            <div>
-              <p className="text-xs font-medium text-slate-200">Mohit Jaiswal</p>
-              <p className="text-[10px] text-slate-400">Developer Workspace</p>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium text-slate-200 truncate">
+                {isPending ? "Loading..." : displayName}
+              </p>
+              <p className="text-[10px] text-slate-400 truncate" title={displayEmail}>
+                {displayEmail}
+              </p>
             </div>
           </div>
-          <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700/60">
+          <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700/60 shrink-0 ml-1">
             <Sparkles className="w-2.5 h-2.5 text-indigo-400" /> Pro
           </span>
         </div>
+
+        {/* Sign Out Action Button */}
+        <button
+          onClick={handleSignOut}
+          disabled={isSigningOut}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-slate-400 hover:text-rose-300 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 transition-all cursor-pointer disabled:cursor-not-allowed"
+          title="Sign out of CodePilot AI"
+        >
+          {isSigningOut ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <LogOut className="w-3.5 h-3.5" />
+          )}
+          <span>{isSigningOut ? "Signing out..." : "Sign Out"}</span>
+        </button>
       </div>
     </aside>
   );

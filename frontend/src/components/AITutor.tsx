@@ -1,0 +1,1285 @@
+"use client";
+
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { 
+  BookOpen, 
+  UploadCloud, 
+  FileText, 
+  Trash2, 
+  Send, 
+  AlertCircle, 
+  CheckCircle2, 
+  Sparkles, 
+  Loader2, 
+  FileCheck, 
+  RotateCcw,
+  ExternalLink,
+  ChevronRight,
+  Filter,
+  Cpu,
+  RefreshCw,
+  Check,
+  ChevronDown,
+  Zap,
+  Layers,
+  Info,
+  MessageSquare,
+  Edit3,
+  Plus,
+  X,
+  Clock
+} from "lucide-react";
+import { 
+  DocumentSummary, 
+  Citation, 
+  ChatMessage,
+  ModelInfo,
+  ConversationSummary,
+  ConversationDetail,
+  MessageRecord,
+  fetchDocuments, 
+  uploadDocument, 
+  deleteDocument, 
+  clearAllDocuments, 
+  askTutor,
+  fetchAvailableModels,
+  fetchConversations,
+  fetchConversation,
+  createConversation,
+  updateConversation,
+  deleteConversation,
+  sendConversationMessage,
+} from "@/services/api";
+import { MarkdownRenderer } from "./MarkdownRenderer";
+import { ChatComposer } from "./chat/ChatComposer";
+import { UserMessage } from "./chat/UserMessage";
+
+interface Message {
+  id: string;
+  sender: "user" | "assistant";
+  text: string;
+  citations?: Citation[];
+  insufficientContext?: boolean;
+  isError?: boolean;
+  modelUsed?: string;
+  timestamp: string;
+}
+
+export function AITutor() {
+  const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  const [selectedFilter, setSelectedFilter] = useState<string>("");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputQuery, setInputQuery] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
+  const [isQuerying, setIsQuerying] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  // Left sidebar tab: "materials" or "history"
+  const [leftTab, setLeftTab] = useState<"materials" | "history">("materials");
+
+  // Conversation Management State
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversationTitle, setActiveConversationTitle] = useState<string>("New Chat");
+  const [isLoadingConversations, setIsLoadingConversations] = useState(false);
+  const [isLoadingActiveConversation, setIsLoadingActiveConversation] = useState(false);
+  const [editingConvId, setEditingConvId] = useState<string | null>(null);
+  const [editingConvTitle, setEditingConvTitle] = useState("");
+  const [isEditingHeaderTitle, setIsEditingHeaderTitle] = useState(false);
+  const [headerTitleInput, setHeaderTitleInput] = useState("");
+
+  // Model Selection State
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [activeRouting, setActiveRouting] = useState<Record<string, string>>({});
+  const [isRefreshingModels, setIsRefreshingModels] = useState(false);
+  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Previous message edit state
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+
+  const loadDocuments = useCallback(async () => {
+    try {
+      const response = await fetchDocuments();
+      setDocuments(response.documents || []);
+    } catch {
+      // Clear documents on error to prevent displaying stale state across accounts
+      setDocuments([]);
+    }
+  }, []);
+
+  const loadModels = useCallback(async (refresh: boolean = false) => {
+    try {
+      if (refresh) setIsRefreshingModels(true);
+      const data = await fetchAvailableModels(refresh);
+      setModels(data.models || []);
+      setActiveRouting(data.active_routing || {});
+
+      const saved = typeof window !== "undefined" ? localStorage.getItem("codepilot_gemini_model") : null;
+      if (saved && data.models.some((m) => m.id === saved)) {
+        setSelectedModel(saved);
+      } else if (data.default_model) {
+        setSelectedModel(data.default_model);
+      } else if (data.models.length > 0) {
+        setSelectedModel(data.models[0].id);
+      }
+    } catch {
+      // Backend may be offline or initializing
+    } finally {
+      setIsRefreshingModels(false);
+    }
+  }, []);
+
+  // Load conversation detail helper
+  const loadConversationDetail = useCallback(async (convId: string) => {
+    try {
+      setIsLoadingActiveConversation(true);
+      const detail = await fetchConversation(convId);
+      setActiveConversationId(detail.id);
+      setActiveConversationTitle(detail.title);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("codepilot_active_conv_id", detail.id);
+      }
+      if (detail.selected_model) {
+        setSelectedModel(detail.selected_model);
+      }
+      if (detail.document_filter !== undefined) {
+        setSelectedFilter(detail.document_filter || "");
+      }
+      const mappedMessages: Message[] = detail.messages.map((m) => ({
+        id: m.id,
+        sender: m.role === "user" ? "user" : "assistant",
+        text: m.content,
+        citations: m.citations || [],
+        insufficientContext: m.insufficient_context,
+        isError: m.is_error,
+        modelUsed: m.model_used,
+        timestamp: new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      }));
+      setMessages(mappedMessages);
+    } catch (err) {
+      console.warn("Failed to load conversation details:", err);
+    } finally {
+      setIsLoadingActiveConversation(false);
+    }
+  }, []);
+
+  // Load conversation list and restore last active conversation
+  const loadConversations = useCallback(async () => {
+    try {
+      setIsLoadingConversations(true);
+      const data = await fetchConversations();
+      setConversations(data.conversations || []);
+
+      const savedConvId = typeof window !== "undefined" ? localStorage.getItem("codepilot_active_conv_id") : null;
+      if (savedConvId && data.conversations.some((c) => c.id === savedConvId)) {
+        await loadConversationDetail(savedConvId);
+      } else if (data.conversations.length > 0) {
+        // Default to the most recent conversation if no saved ID exists
+        await loadConversationDetail(data.conversations[0].id);
+      } else {
+        // No conversations exist yet: ready for fresh new chat
+        setActiveConversationId(null);
+        setActiveConversationTitle("New Chat");
+        setMessages([]);
+      }
+    } catch {
+      // Backend or DB may be initializing
+    } finally {
+      setIsLoadingConversations(false);
+    }
+  }, [loadConversationDetail]);
+
+  useEffect(() => {
+    loadDocuments();
+    loadModels();
+    loadConversations();
+  }, [loadDocuments, loadModels, loadConversations]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(event.target as Node)) {
+        setIsModelDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const handleSelectModel = (modelId: string) => {
+    setSelectedModel(modelId);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("codepilot_gemini_model", modelId);
+    }
+    if (activeConversationId) {
+      updateConversation(activeConversationId, { selected_model: modelId }).catch(() => {});
+    }
+    setIsModelDropdownOpen(false);
+  };
+
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isQuerying]);
+
+  const handleFileUpload = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith(".pdf")) {
+      setUploadError("Only PDF documents (.pdf) are supported.");
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      setUploadError("File exceeds the 15MB size limit.");
+      return;
+    }
+
+    setUploadError(null);
+    setUploadSuccess(null);
+    setIsUploading(true);
+
+    try {
+      const response = await uploadDocument(file);
+      setUploadSuccess(`Indexed '${response.document.document_name}' (${response.document.total_chunks} chunks).`);
+      await loadDocuments();
+      setTimeout(() => setUploadSuccess(null), 4000);
+    } catch (err: unknown) {
+      setUploadError(err instanceof Error ? err.message : "Failed to upload document.");
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      handleFileUpload(e.target.files[0]);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleFileUpload(e.dataTransfer.files[0]);
+    }
+  };
+
+  const handleDelete = async (docName: string) => {
+    try {
+      await deleteDocument(docName);
+      if (selectedFilter === docName) setSelectedFilter("");
+      await loadDocuments();
+    } catch (err: unknown) {
+      setUploadError(err instanceof Error ? err.message : "Failed to delete document.");
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (!confirm("Are you sure you want to remove all indexed materials?")) return;
+    try {
+      await clearAllDocuments();
+      setSelectedFilter("");
+      setDocuments([]);
+    } catch (err: unknown) {
+      setUploadError(err instanceof Error ? err.message : "Failed to clear documents.");
+    }
+  };
+
+  const handleCancelGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsQuerying(false);
+  };
+
+  const handleEditPrevious = () => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].sender === "user") {
+        setInputQuery(messages[i].text);
+        setEditingMessageId(messages[i].id);
+        break;
+      }
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingMessageId(null);
+    setInputQuery("");
+  };
+
+  // Start a fresh new chat
+  const handleStartNewChat = () => {
+    setActiveConversationId(null);
+    setActiveConversationTitle("New Chat");
+    setMessages([]);
+    setEditingMessageId(null);
+    setInputQuery("");
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("codepilot_active_conv_id");
+    }
+  };
+
+  // Switch to a chosen conversation
+  const handleSelectConversation = async (convId: string) => {
+    if (convId === activeConversationId) return;
+    await loadConversationDetail(convId);
+  };
+
+  // Delete conversation
+  const handleDeleteConversation = async (convId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await deleteConversation(convId);
+      const updated = conversations.filter((c) => c.id !== convId);
+      setConversations(updated);
+
+      if (activeConversationId === convId) {
+        if (updated.length > 0) {
+          await loadConversationDetail(updated[0].id);
+        } else {
+          handleStartNewChat();
+        }
+      }
+    } catch (err) {
+      console.error("Failed to delete conversation:", err);
+    }
+  };
+
+  // Rename conversation from sidebar list
+  const handleStartInlineRename = (conv: ConversationSummary, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingConvId(conv.id);
+    setEditingConvTitle(conv.title);
+  };
+
+  const handleSaveInlineRename = async (convId: string) => {
+    const trimmed = editingConvTitle.trim();
+    setEditingConvId(null);
+    if (!trimmed) return;
+
+    try {
+      const updated = await updateConversation(convId, { title: trimmed });
+      setConversations((prev) =>
+        prev.map((c) => (c.id === convId ? { ...c, title: updated.title } : c))
+      );
+      if (activeConversationId === convId) {
+        setActiveConversationTitle(updated.title);
+      }
+    } catch (err) {
+      console.error("Failed to rename conversation:", err);
+    }
+  };
+
+  // Rename active conversation from header
+  const handleSaveHeaderTitle = async () => {
+    const trimmed = headerTitleInput.trim();
+    setIsEditingHeaderTitle(false);
+    if (!trimmed || !activeConversationId) return;
+
+    try {
+      const updated = await updateConversation(activeConversationId, { title: trimmed });
+      setActiveConversationTitle(updated.title);
+      setConversations((prev) =>
+        prev.map((c) => (c.id === activeConversationId ? { ...c, title: updated.title } : c))
+      );
+    } catch (err) {
+      console.error("Failed to rename conversation:", err);
+    }
+  };
+
+  // Send message using backend persistent conversation
+  const handleSendMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const query = inputQuery.trim();
+    if (!query || isQuerying) return;
+
+    let baseMessages = messages;
+    if (editingMessageId) {
+      const editIndex = messages.findIndex((m) => m.id === editingMessageId);
+      if (editIndex !== -1) {
+        baseMessages = messages.slice(0, editIndex);
+      }
+      setEditingMessageId(null);
+    }
+
+    const tempId = "temp-" + Date.now().toString();
+    const optimisticUserMsg: Message = {
+      id: tempId,
+      sender: "user",
+      text: query,
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    };
+
+    setMessages([...baseMessages, optimisticUserMsg]);
+    setInputQuery("");
+    setIsQuerying(true);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    try {
+      let targetConvId = activeConversationId;
+
+      // If starting fresh without an existing conversation, create one first
+      if (!targetConvId) {
+        const newConv = await createConversation({
+          title: query.slice(0, 45),
+          selected_model: selectedModel || undefined,
+          document_filter: selectedFilter || undefined,
+        });
+        targetConvId = newConv.id;
+        setActiveConversationId(newConv.id);
+        setActiveConversationTitle(newConv.title);
+        if (typeof window !== "undefined") {
+          localStorage.setItem("codepilot_active_conv_id", newConv.id);
+        }
+      }
+
+      const result = await sendConversationMessage(
+        targetConvId,
+        query,
+        selectedModel || undefined,
+        selectedFilter || undefined,
+        undefined,
+        controller.signal
+      );
+
+      const persistedUserMsg: Message = {
+        id: result.user_message.id,
+        sender: "user",
+        text: result.user_message.content,
+        timestamp: new Date(result.user_message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
+
+      const assistantMsg: Message = {
+        id: result.assistant_message.id,
+        sender: "assistant",
+        text: result.assistant_message.content,
+        citations: result.assistant_message.citations || [],
+        insufficientContext: result.assistant_message.insufficient_context,
+        isError: result.assistant_message.is_error,
+        modelUsed: result.assistant_message.model_used || selectedModel,
+        timestamp: new Date(result.assistant_message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
+
+      setMessages((prev) => {
+        const withoutOptimistic = prev.filter((m) => m.id !== tempId);
+        return [...withoutOptimistic, persistedUserMsg, assistantMsg];
+      });
+
+      // Update conversation title and list ordering
+      if (result.conversation) {
+        setActiveConversationTitle(result.conversation.title);
+        setConversations((prev) => {
+          const idx = prev.findIndex((c) => c.id === result.conversation.id);
+          let updatedList: ConversationSummary[];
+          if (idx !== -1) {
+            updatedList = [...prev];
+            updatedList[idx] = result.conversation;
+          } else {
+            updatedList = [result.conversation, ...prev];
+          }
+          return updatedList.sort(
+            (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+          );
+        });
+      }
+    } catch (err: unknown) {
+      const isAbort = 
+        (err instanceof DOMException && err.name === "AbortError") ||
+        (err instanceof Error && err.name === "AbortError") ||
+        (err instanceof Error && err.message.toLowerCase().includes("abort"));
+
+      if (isAbort) {
+        const cancelledMsg: Message = {
+          id: (Date.now() + 1).toString(),
+          sender: "assistant",
+          text: "*Generation stopped by user.*",
+          insufficientContext: false,
+          isError: false,
+          modelUsed: selectedModel,
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        };
+        setMessages((prev) => [...prev.filter((m) => m.id !== tempId), optimisticUserMsg, cancelledMsg]);
+        return;
+      }
+
+      const errorMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        sender: "assistant",
+        text: err instanceof Error ? `Connection error: ${err.message}` : "Failed to receive response from tutor service.",
+        insufficientContext: false,
+        isError: true,
+        modelUsed: selectedModel,
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
+      setMessages((prev) => [...prev.filter((m) => m.id !== tempId), optimisticUserMsg, errorMsg]);
+    } finally {
+      setIsQuerying(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  const handleRetry = async (failedMsgId: string) => {
+    if (isQuerying || !activeConversationId) return;
+    const failedIndex = messages.findIndex((m) => m.id === failedMsgId);
+    if (failedIndex === -1) return;
+
+    let queryToRetry = "";
+    for (let i = failedIndex - 1; i >= 0; i--) {
+      if (messages[i].sender === "user") {
+        queryToRetry = messages[i].text;
+        break;
+      }
+    }
+    if (!queryToRetry) return;
+
+    // Remove the failed assistant message from UI
+    setMessages((prev) => prev.filter((m) => m.id !== failedMsgId));
+    setIsQuerying(true);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    try {
+      const result = await sendConversationMessage(
+        activeConversationId,
+        queryToRetry,
+        selectedModel || undefined,
+        selectedFilter || undefined,
+        undefined,
+        controller.signal
+      );
+
+      const assistantMsg: Message = {
+        id: result.assistant_message.id,
+        sender: "assistant",
+        text: result.assistant_message.content,
+        citations: result.assistant_message.citations || [],
+        insufficientContext: result.assistant_message.insufficient_context,
+        isError: result.assistant_message.is_error,
+        modelUsed: result.assistant_message.model_used || selectedModel,
+        timestamp: new Date(result.assistant_message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+    } catch (err: unknown) {
+      const errorMsg: Message = {
+        id: Date.now().toString(),
+        sender: "assistant",
+        text: err instanceof Error ? `Connection error: ${err.message}` : "Failed to receive response from tutor service.",
+        insufficientContext: false,
+        isError: true,
+        modelUsed: selectedModel,
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+    } finally {
+      setIsQuerying(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const formatRelativeTime = (dateStr: string) => {
+    try {
+      const d = new Date(dateStr);
+      const now = new Date();
+      const diffSec = Math.floor((now.getTime() - d.getTime()) / 1000);
+      if (diffSec < 60) return "just now";
+      if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+      if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+      return `${Math.floor(diffSec / 86400)}d ago`;
+    } catch {
+      return "";
+    }
+  };
+
+  const currentModelObj = models.find((m) => m.id === selectedModel);
+
+  return (
+    <div className="h-[calc(100vh-8rem)] flex gap-6 max-w-7xl mx-auto select-none">
+      {/* Left Column: Learning Materials & Chat History Sidebar */}
+      <div className="w-80 flex flex-col rounded-xl border border-slate-800 bg-[#0d121f] shrink-0 overflow-hidden">
+        {/* Tab Switcher: Materials vs Chat History */}
+        <div className="p-1.5 border-b border-slate-800/80 bg-slate-900/60 flex items-center gap-1">
+          <button
+            onClick={() => setLeftTab("materials")}
+            className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all ${
+              leftTab === "materials"
+                ? "bg-slate-800 text-white shadow-sm border border-slate-700/60"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
+            }`}
+          >
+            <BookOpen className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Materials</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-900 text-slate-300 border border-slate-700/60">
+              {documents.length}
+            </span>
+          </button>
+          <button
+            onClick={() => setLeftTab("history")}
+            className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all ${
+              leftTab === "history"
+                ? "bg-slate-800 text-white shadow-sm border border-slate-700/60"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
+            <span>History</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-900 text-slate-300 border border-slate-700/60">
+              {conversations.length}
+            </span>
+          </button>
+        </div>
+
+        {/* TAB 1: MATERIALS CONTENT */}
+        {leftTab === "materials" && (
+          <div className="flex-1 flex flex-col min-h-0">
+            {/* Upload Drop Zone */}
+            <div className="p-4 border-b border-slate-800/80 space-y-3">
+              <div
+                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
+                  isDragging
+                    ? "border-indigo-500 bg-indigo-500/10"
+                    : "border-slate-700/70 hover:border-indigo-500/60 bg-slate-900/40"
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,application/pdf"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+                {isUploading ? (
+                  <div className="flex flex-col items-center gap-2 py-2 text-indigo-400">
+                    <Loader2 className="w-6 h-6 animate-spin" />
+                    <span className="text-xs font-medium">Extracting & indexing...</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-1.5 py-1">
+                    <UploadCloud className="w-6 h-6 text-slate-400" />
+                    <p className="text-xs font-medium text-slate-200">Upload Course Material (PDF)</p>
+                    <p className="text-[10px] text-slate-500">Drag & drop or browse (Max 15MB)</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Feedback Messages */}
+              {uploadError && (
+                <div className="p-2.5 rounded-lg bg-rose-950/40 border border-rose-800/60 text-rose-300 text-[11px] flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span>{uploadError}</span>
+                </div>
+              )}
+              {uploadSuccess && (
+                <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-[11px] flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{uploadSuccess}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Filter Selection */}
+            {documents.length > 0 && (
+              <div className="px-4 py-2 bg-slate-900/60 border-b border-slate-800/80 flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  <Filter className="w-3 h-3 text-slate-400" />
+                  <span>Context Scope:</span>
+                </div>
+                <select
+                  value={selectedFilter}
+                  onChange={(e) => setSelectedFilter(e.target.value)}
+                  className="bg-slate-800 border border-slate-700 text-slate-200 text-[11px] rounded px-2 py-1 max-w-[140px] truncate focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="">All Documents</option>
+                  {documents.map((d) => (
+                    <option key={d.document_name} value={d.document_name}>
+                      {d.document_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Document List */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {documents.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center p-4 text-slate-500">
+                  <FileText className="w-8 h-8 mb-2 opacity-40" />
+                  <p className="text-xs font-medium">No materials indexed yet</p>
+                  <p className="text-[11px] text-slate-500 mt-1 max-w-[180px]">
+                    Upload lecture notes, syllabi, or textbook chapters to ground answers.
+                  </p>
+                </div>
+              ) : (
+                documents.map((doc) => {
+                  const isFiltered = selectedFilter === doc.document_name;
+                  return (
+                    <div
+                      key={doc.document_name}
+                      className={`p-3 rounded-lg border transition-colors ${
+                        isFiltered
+                          ? "bg-indigo-950/20 border-indigo-500/50"
+                          : "bg-slate-900/40 border-slate-800/80 hover:border-slate-700"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex items-start gap-2">
+                          <FileCheck className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-slate-200 truncate" title={doc.document_name}>
+                              {doc.document_name}
+                            </p>
+                            <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-400">
+                              <span>{doc.total_pages} {doc.total_pages === 1 ? "page" : "pages"}</span>
+                              <span>•</span>
+                              <span>{doc.total_chunks} chunks</span>
+                              {doc.file_size_bytes > 0 && (
+                                <>
+                                  <span>•</span>
+                                  <span>{formatFileSize(doc.file_size_bytes)}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDelete(doc.document_name)}
+                          title="Remove document"
+                          className="text-slate-500 hover:text-rose-400 transition-colors p-1"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Clear All Footer */}
+            {documents.length > 0 && (
+              <div className="p-3 border-t border-slate-800/80 bg-slate-900/40 flex justify-between items-center">
+                <span className="text-[11px] text-slate-400">Total: {documents.reduce((acc, d) => acc + d.total_chunks, 0)} chunks</span>
+                <button
+                  onClick={handleClearAll}
+                  className="text-[11px] text-slate-400 hover:text-rose-400 transition-colors flex items-center gap-1"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>Clear All</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 2: CHAT HISTORY CONTENT */}
+        {leftTab === "history" && (
+          <div className="flex-1 flex flex-col min-h-0">
+            {/* New Chat Button */}
+            <div className="p-3 border-b border-slate-800/80">
+              <button
+                onClick={handleStartNewChat}
+                className="w-full py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium flex items-center justify-center gap-2 transition-colors shadow-sm"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>New Chat</span>
+              </button>
+            </div>
+
+            {/* Conversation Threads List */}
+            <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+              {isLoadingConversations && conversations.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center p-4 text-slate-500 space-y-2">
+                  <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
+                  <p className="text-xs">Loading conversations...</p>
+                </div>
+              ) : conversations.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center p-4 text-slate-500">
+                  <MessageSquare className="w-8 h-8 mb-2 opacity-40" />
+                  <p className="text-xs font-medium">No saved conversations</p>
+                  <p className="text-[11px] text-slate-500 mt-1 max-w-[180px]">
+                    Your questions and learning sessions will automatically persist here.
+                  </p>
+                </div>
+              ) : (
+                conversations.map((conv) => {
+                  const isActive = conv.id === activeConversationId;
+                  const isEditingThis = editingConvId === conv.id;
+
+                  return (
+                    <div
+                      key={conv.id}
+                      onClick={() => handleSelectConversation(conv.id)}
+                      className={`group relative p-2.5 rounded-lg border text-left cursor-pointer transition-all ${
+                        isActive
+                          ? "bg-indigo-950/40 border-indigo-500/50 text-white shadow-sm"
+                          : "bg-slate-900/30 border-transparent hover:bg-slate-800/60 hover:border-slate-700/60 text-slate-300"
+                      }`}
+                    >
+                      {isEditingThis ? (
+                        <div
+                          className="flex items-center gap-1.5"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            autoFocus
+                            type="text"
+                            value={editingConvTitle}
+                            onChange={(e) => setEditingConvTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleSaveInlineRename(conv.id);
+                              if (e.key === "Escape") setEditingConvId(null);
+                            }}
+                            className="flex-1 bg-slate-950 border border-indigo-500 rounded px-2 py-1 text-xs text-white focus:outline-none"
+                          />
+                          <button
+                            onClick={() => handleSaveInlineRename(conv.id)}
+                            className="p-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white"
+                          >
+                            <Check className="w-3 h-3" />
+                          </button>
+                          <button
+                            onClick={() => setEditingConvId(null)}
+                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-start justify-between gap-1.5">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-medium truncate" title={conv.title}>
+                              {conv.title}
+                            </p>
+                            <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-400">
+                              <span>{conv.message_count} {conv.message_count === 1 ? "msg" : "msgs"}</span>
+                              <span>•</span>
+                              <span>{formatRelativeTime(conv.updated_at)}</span>
+                            </div>
+                          </div>
+
+                          {/* Action icons on hover or active */}
+                          <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => handleStartInlineRename(conv, e)}
+                              title="Rename chat"
+                              className="p-1 text-slate-400 hover:text-slate-200 transition-colors"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={(e) => handleDeleteConversation(conv.id, e)}
+                              title="Delete conversation"
+                              className="p-1 text-slate-400 hover:text-rose-400 transition-colors"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* History Footer */}
+            <div className="p-3 border-t border-slate-800/80 bg-slate-900/40 text-[11px] text-slate-400 flex items-center justify-between">
+              <span>{conversations.length} {conversations.length === 1 ? "thread" : "threads"} stored</span>
+              <button
+                onClick={loadConversations}
+                disabled={isLoadingConversations}
+                title="Refresh conversation list"
+                className="hover:text-slate-200 transition-colors flex items-center gap-1"
+              >
+                <RefreshCw className={`w-3 h-3 ${isLoadingConversations ? "animate-spin text-indigo-400" : ""}`} />
+                <span>Refresh</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Right Column: Q&A Chat Console */}
+      <div className="flex-1 flex flex-col rounded-xl border border-slate-800 bg-[#0d121f] overflow-hidden">
+        {/* Chat Header */}
+        <div className="p-4 border-b border-slate-800/80 flex items-center justify-between relative">
+          <div className="min-w-0 flex-1 mr-4">
+            <div className="flex items-center gap-2">
+              {isEditingHeaderTitle ? (
+                <div className="flex items-center gap-1.5 max-w-sm">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={headerTitleInput}
+                    onChange={(e) => setHeaderTitleInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleSaveHeaderTitle();
+                      if (e.key === "Escape") setIsEditingHeaderTitle(false);
+                    }}
+                    className="bg-slate-950 border border-indigo-500 rounded px-2 py-0.5 text-xs text-white focus:outline-none"
+                  />
+                  <button
+                    onClick={handleSaveHeaderTitle}
+                    className="p-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white"
+                  >
+                    <Check className="w-3 h-3" />
+                  </button>
+                  <button
+                    onClick={() => setIsEditingHeaderTitle(false)}
+                    className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 group">
+                  <h2 className="text-sm font-semibold text-white truncate max-w-md" title={activeConversationTitle}>
+                    {activeConversationTitle || "AI Learning Assistant"}
+                  </h2>
+                  {activeConversationId && (
+                    <button
+                      onClick={() => {
+                        setHeaderTitleInput(activeConversationTitle);
+                        setIsEditingHeaderTitle(true);
+                      }}
+                      title="Rename conversation"
+                      className="p-1 text-slate-500 hover:text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              )}
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+                Curriculum Grounded
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-0.5 truncate">
+              {selectedFilter
+                ? `Restricted to context from: ${selectedFilter}`
+                : "Retrieving from all indexed course materials"}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2.5 shrink-0">
+            {/* Dynamic Model Selector Dropdown */}
+            <div className="relative" ref={modelDropdownRef}>
+              <button
+                onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900/90 hover:bg-slate-800/90 border border-slate-700/70 text-xs text-slate-200 transition-colors shadow-sm"
+                title="Select Gemini Model"
+              >
+                <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+                <span className="font-medium text-[11px] max-w-[130px] truncate">
+                  {currentModelObj?.display_name || selectedModel || "Gemini Model"}
+                </span>
+                {currentModelObj && (
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded border font-mono font-medium ${
+                    currentModelObj.category === "fast"
+                      ? "bg-amber-500/10 text-amber-300 border-amber-500/20"
+                      : currentModelObj.category === "reasoning"
+                      ? "bg-purple-500/10 text-purple-300 border-purple-500/20"
+                      : currentModelObj.category === "preview"
+                      ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/20"
+                      : "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
+                  }`}>
+                    {currentModelObj.category.toUpperCase()}
+                  </span>
+                )}
+                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${isModelDropdownOpen ? "rotate-180" : ""}`} />
+              </button>
+
+              {/* Dropdown Menu */}
+              {isModelDropdownOpen && (
+                <div className="absolute right-0 top-full mt-2 w-96 rounded-xl bg-[#090d16] border border-slate-700/80 shadow-2xl z-50 overflow-hidden flex flex-col">
+                  {/* Dropdown Header */}
+                  <div className="p-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/60">
+                    <div className="flex items-center gap-2">
+                      <Cpu className="w-4 h-4 text-indigo-400" />
+                      <span className="text-xs font-semibold text-white tracking-wide uppercase">Gemini Models</span>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        loadModels(true);
+                      }}
+                      disabled={isRefreshingModels}
+                      title="Refresh available models from Google API"
+                      className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingModels ? "animate-spin text-indigo-400" : ""}`} />
+                    </button>
+                  </div>
+
+                  {/* Routing Info Banner */}
+                  {activeRouting.rewrite && (
+                    <div className="px-3 py-1.5 bg-indigo-950/20 border-b border-indigo-900/30 text-[10px] text-indigo-300 flex items-center justify-between font-mono">
+                      <span>Rewriter: {activeRouting.rewrite}</span>
+                      <span>Active: {selectedModel}</span>
+                    </div>
+                  )}
+
+                  {/* Model Items List */}
+                  <div className="max-h-72 overflow-y-auto p-1.5 space-y-1">
+                    {models.length === 0 ? (
+                      <div className="p-4 text-center text-xs text-slate-400">
+                        {isRefreshingModels ? "Loading available models..." : "No Gemini models discovered."}
+                      </div>
+                    ) : (
+                      models.map((model) => {
+                        const isSelected = (model.id === selectedModel);
+                        return (
+                          <button
+                            key={model.id}
+                            onClick={() => handleSelectModel(model.id)}
+                            className={`w-full text-left p-2.5 rounded-lg border transition-all flex items-start justify-between gap-2.5 ${
+                              isSelected
+                                ? "bg-indigo-950/40 border-indigo-500/50 text-white"
+                                : "bg-slate-900/40 border-transparent hover:bg-slate-800/60 hover:border-slate-700/60 text-slate-300"
+                            }`}
+                          >
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-medium text-white truncate">{model.display_name}</span>
+                                <span className={`text-[9px] px-1.5 py-0.2 rounded border font-mono font-medium ${
+                                  model.category === "fast"
+                                    ? "bg-amber-500/10 text-amber-300 border-amber-500/20"
+                                    : model.category === "reasoning"
+                                    ? "bg-purple-500/10 text-purple-300 border-purple-500/20"
+                                    : model.category === "preview"
+                                    ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/20"
+                                    : "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
+                                }`}>
+                                  {model.category.toUpperCase()}
+                                </span>
+                                {model.is_default && (
+                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 border border-slate-700 font-mono">
+                                    DEFAULT
+                                  </span>
+                                )}
+                              </div>
+                              {model.description && (
+                                <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
+                                  {model.description}
+                                </p>
+                              )}
+                              <p className="text-[10px] text-slate-500 font-mono truncate">{model.id}</p>
+                            </div>
+                            {isSelected && (
+                              <div className="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0 mt-0.5 border border-indigo-500/40">
+                                <Check className="w-3 h-3" />
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Quick New Chat Button */}
+            <button
+              onClick={handleStartNewChat}
+              className="text-xs text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-900/40 shadow-sm"
+              title="Start a new chat thread"
+            >
+              <Plus className="w-3 h-3 text-indigo-400" />
+              <span>New Chat</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Message Thread */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+          {isLoadingActiveConversation ? (
+            <div className="h-full flex flex-col items-center justify-center text-center space-y-2 text-slate-400">
+              <Loader2 className="w-6 h-6 animate-spin text-indigo-400" />
+              <p className="text-xs">Loading conversation history...</p>
+            </div>
+          ) : messages.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto space-y-4">
+              <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center">
+                <Sparkles className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-white">Curriculum-Grounded Question Answering</h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Ask questions about algorithms, system architectures, or language rules found in your uploaded materials.
+                  Every answer provides verifiable citations and strictly avoids hallucination.
+                </p>
+              </div>
+
+              {documents.length > 0 && (
+                <div className="w-full space-y-2 pt-2">
+                  <p className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 text-left">
+                    Suggested Questions
+                  </p>
+                  <div className="space-y-1.5 text-left">
+                    <button
+                      onClick={() => setInputQuery("What are the key concepts and topics covered in this material?")}
+                      className="w-full p-2.5 rounded-lg bg-slate-900/60 hover:bg-slate-800/80 border border-slate-800 text-xs text-slate-300 text-left transition-colors flex items-center justify-between"
+                    >
+                      <span>What are the key concepts and topics covered in this material?</span>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    </button>
+                    <button
+                      onClick={() => setInputQuery("Explain the time and space complexity trade-offs discussed.")}
+                      className="w-full p-2.5 rounded-lg bg-slate-900/60 hover:bg-slate-800/80 border border-slate-800 text-xs text-slate-300 text-left transition-colors flex items-center justify-between"
+                    >
+                      <span>Explain the time and space complexity trade-offs discussed.</span>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`flex flex-col ${msg.sender === "user" ? "items-end" : "items-start"}`}
+              >
+                <div className="flex items-center gap-2 mb-1 px-1">
+                  <span className="text-[10px] font-medium text-slate-400">
+                    {msg.sender === "user" ? "You" : "AI Learning Assistant"}
+                  </span>
+                  {msg.sender === "assistant" && msg.modelUsed && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800/90 text-indigo-300 font-mono border border-slate-700/60">
+                      {msg.modelUsed}
+                    </span>
+                  )}
+                  <span className="text-[10px] text-slate-600">{msg.timestamp}</span>
+                </div>
+
+                <div
+                  className={`max-w-[85%] rounded-xl p-4 text-xs leading-relaxed ${
+                    msg.sender === "user"
+                      ? "bg-indigo-600 text-white rounded-tr-sm shadow-sm"
+                      : msg.isError
+                      ? "bg-[#181119] text-rose-200 border border-rose-900/50 rounded-tl-sm space-y-3.5 shadow-sm"
+                      : "bg-[#0f1422] text-slate-200 border border-slate-800/90 rounded-tl-sm space-y-3.5 shadow-sm"
+                  }`}
+                >
+                  {msg.sender === "user" ? (
+                    <UserMessage content={msg.text} />
+                  ) : msg.isError ? (
+                    <div className="space-y-3">
+                      <div className="flex items-start gap-2.5 text-rose-300">
+                        <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                        <div className="flex-1 text-xs leading-relaxed">{msg.text}</div>
+                      </div>
+                      <button
+                        onClick={() => handleRetry(msg.id)}
+                        disabled={isQuerying}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-medium transition-colors disabled:opacity-50"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Retry Request</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <MarkdownRenderer content={msg.text} />
+                  )}
+
+                  {/* Insufficient Context Alert - strictly excluded on provider errors */}
+                  {!msg.isError && msg.insufficientContext && msg.sender === "assistant" && (
+                    <div className="p-2.5 rounded-lg bg-amber-950/30 border border-amber-800/40 text-amber-300 text-[11px] flex items-center gap-2">
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span>Context is insufficient in current material. Refusing to speculate.</span>
+                    </div>
+                  )}
+
+                  {/* Citations Box */}
+                  {msg.citations && msg.citations.length > 0 && (
+                    <div className="pt-3 border-t border-slate-800/80 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10px] uppercase font-semibold text-indigo-300 flex items-center gap-1.5 tracking-wider">
+                          <FileText className="w-3 h-3 text-indigo-400" /> Grounded Source Citations
+                        </p>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {msg.citations.length} {msg.citations.length === 1 ? "source" : "sources"}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {msg.citations.map((c, idx) => (
+                          <div
+                            key={idx}
+                            className="p-2.5 rounded-lg bg-[#070a12] border border-slate-800/80 hover:border-slate-700/80 text-[11px] space-y-1.5 transition-colors"
+                          >
+                            <div className="flex items-center justify-between text-[10px] font-medium text-indigo-400">
+                              <span className="truncate max-w-[150px] font-mono text-slate-300" title={c.document_name}>
+                                {c.document_name}
+                              </span>
+                              <span className="px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/25 text-indigo-300 font-mono text-[10px] font-medium">
+                                Page {c.page_number}
+                              </span>
+                            </div>
+                            <p className="text-slate-400 text-[11px] line-clamp-3 italic leading-relaxed">
+                              &ldquo;{c.snippet}&rdquo;
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+
+          {isQuerying && (
+            <div className="flex flex-col items-start space-y-1">
+              <span className="text-[10px] font-medium text-slate-400 px-1">AI Learning Assistant</span>
+              <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center gap-2.5 text-xs text-indigo-300">
+                <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                <span>Searching vector database & grounding response...</span>
+              </div>
+            </div>
+          )}
+
+          <div ref={chatBottomRef} />
+        </div>
+
+        {/* Chat Composer Bar */}
+        <div className="p-3.5 sm:p-4 border-t border-slate-800/80 bg-[#070a12]/70">
+          <ChatComposer
+            value={inputQuery}
+            onChange={setInputQuery}
+            onSend={handleSendMessage}
+            onCancel={handleCancelGeneration}
+            isLoading={isQuerying}
+            isEditing={!!editingMessageId}
+            onCancelEdit={handleCancelEdit}
+            onEditPrevious={handleEditPrevious}
+            placeholder={
+              documents.length === 0
+                ? "Upload course materials (PDF) first to ask curriculum-grounded questions..."
+                : "Ask a question, paste code, or drop an error log... (Shift + Enter for new line, Enter to send)"
+            }
+            disabled={documents.length === 0}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}

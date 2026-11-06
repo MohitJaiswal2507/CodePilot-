@@ -1,7 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import health
+from app.api.routes import health, tutor, conversations
 from app.core.config import settings
+from app.db.session import engine
+from app.db.base import Base
+import app.models # Register all models
+
+# Ensure tables exist
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -19,6 +25,8 @@ app.add_middleware(
 )
 
 app.include_router(health.router, prefix="/api", tags=["System"])
+app.include_router(tutor.router, prefix="/api", tags=["AI Learning Tutor"])
+app.include_router(conversations.router, prefix="/api", tags=["Conversations"])
 
 @app.get("/")
 def root():
@@ -26,5 +34,6 @@ def root():
         "message": "Welcome to CodePilot AI API",
         "docs": "/docs",
         "health": "/api/health",
+        "tutor": "/api/tutor",
+        "conversations": "/api/conversations",
     }
-
