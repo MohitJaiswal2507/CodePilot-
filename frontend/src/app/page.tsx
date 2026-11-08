@@ -5,6 +5,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { Header } from "@/components/Header";
 import { DashboardOverview } from "@/components/DashboardOverview";
 import { AITutor } from "@/components/AITutor";
+import { CodeReviewer } from "@/components/CodeReviewer";
 import { Code2, Terminal, ShieldCheck, Settings as SettingsIcon } from "lucide-react";
 import { authClient } from "@/lib/auth/client";
 import { setApiAuthToken } from "@/services/api";
@@ -60,18 +61,7 @@ export default function Home() {
           )}
 
           {currentTab === "code-review" && (
-            <div className="max-w-4xl mx-auto rounded-xl border border-slate-800 bg-[#0d121f] p-8 text-center space-y-4">
-              <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center mx-auto">
-                <Code2 className="w-6 h-6" />
-              </div>
-              <h2 className="text-lg font-bold text-white">AI Code Reviewer</h2>
-              <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
-                Multi-dimensional static and algorithmic review with Big-O time and space complexity derivation and refactoring diffs.
-              </p>
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800 text-[11px] text-slate-300 border border-slate-700">
-                Coming Soon
-              </div>
-            </div>
+            <CodeReviewer />
           )}
 
           {currentTab === "sandbox" && (
