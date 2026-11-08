@@ -590,10 +590,14 @@ export async function sendConversationMessage(
 // -----------------------------------------------------------------------------
 
 export async function submitCodeReview(
-  code: string,
-  language: string,
+  codeOrData: string | { code: string; language: string; model?: string },
+  language?: string,
   model?: string
 ): Promise<CodeReviewResponse> {
+  const code = typeof codeOrData === "string" ? codeOrData : codeOrData.code;
+  const lang = typeof codeOrData === "string" ? (language || "python") : codeOrData.language;
+  const mdl = typeof codeOrData === "string" ? model : codeOrData.model;
+
   const headers = await getAuthHeaders({
     "Content-Type": "application/json",
     "Accept": "application/json",
@@ -604,8 +608,8 @@ export async function submitCodeReview(
     headers,
     body: JSON.stringify({
       code,
-      language,
-      model: model || null,
+      language: lang,
+      model: mdl || null,
     }),
   });
 

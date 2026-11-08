@@ -197,7 +197,7 @@ def test_submit_code_review_unsupported_language():
     assert any("language" in str(err) for err in res.json()["detail"])
 
 
-@patch("app.services.review_graph.execute_code_review")
+@patch("app.api.routes.reviewer.execute_code_review")
 def test_submit_and_retrieve_review_lifecycle(mock_review_exec, clean_reviews):
     mock_res = {
         "summary": "Valid bubble sort implementation.",
@@ -265,7 +265,7 @@ def test_submit_and_retrieve_review_lifecycle(mock_review_exec, clean_reviews):
     assert hist_res.json()["reviews"][0]["id"] == review_id
 
 
-@patch("app.services.review_graph.execute_code_review")
+@patch("app.api.routes.reviewer.execute_code_review")
 def test_cross_user_code_review_isolation(mock_review_exec, clean_reviews):
     """Verify that User B cannot view, list, or delete User A's code reviews."""
     mock_res = {
