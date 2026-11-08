@@ -105,6 +105,66 @@ export interface SendMessageResult {
   conversation: ConversationSummary;
 }
 
+export interface CodeReviewIssue {
+  type: "bug" | "error" | "warning" | "performance" | "style" | "security";
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  message: string;
+  line_number?: number | null;
+  suggestion?: string | null;
+}
+
+export interface EdgeCaseAnalysis {
+  category: string;
+  scenario: string;
+  behavior: string;
+  handled: boolean;
+}
+
+export interface ComplexityAnalysis {
+  time_complexity: string;
+  time_reasoning: string;
+  space_complexity: string;
+  space_reasoning: string;
+}
+
+export interface CodeReviewResult {
+  summary: string;
+  overall_assessment: "excellent" | "good" | "needs_improvement" | "problematic" | "critical_bugs";
+  quality_score: number;
+  detected_issues: CodeReviewIssue[];
+  edge_cases: EdgeCaseAnalysis[];
+  complexity: ComplexityAnalysis;
+  improvement_suggestions: string[];
+  corrected_code?: string | null;
+  explanation_of_changes?: string | null;
+  static_analysis_notes?: string | null;
+}
+
+export interface CodeReviewResponse {
+  id: string;
+  language: string;
+  submitted_code: string;
+  review: CodeReviewResult;
+  model_used: string;
+  created_at: string;
+}
+
+export interface CodeReviewHistoryItem {
+  id: string;
+  language: string;
+  code_snippet: string;
+  summary: string;
+  overall_assessment: string;
+  quality_score: number;
+  model_used: string;
+  created_at: string;
+}
+
+export interface CodeReviewHistoryResponse {
+  reviews: CodeReviewHistoryItem[];
+  total: number;
+}
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 let inMemoryAuthToken: string | null = null;
@@ -523,4 +583,118 @@ export async function sendConversationMessage(
   }
 
   return response.json();
+}
+
+// -----------------------------------------------------------------------------
+// AI Code Reviewer API Services
+// -----------------------------------------------------------------------------
+
+export async function submitCodeReview(
+  code: string,
+  language: string,
+  model?: string
+): Promise<CodeReviewResponse> {
+  const headers = await getAuthHeaders({
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+  });
+
+  const response = await fetch(`${API_BASE_URL}/api/reviewer/review`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      code,
+      language,
+      model: model || null,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Code review failed with status ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export async function fetchCodeReviewHistory(
+  limit: number = 20,
+  offset: number = 0
+): Promise<CodeReviewHistoryResponse> {
+  const headers = await getAuthHeaders({
+    "Accept": "application/json",
+  });
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/reviewer/history?limit=${limit}&offset=${offset}`,
+    {
+      method: "GET",
+      headers,
+      cache: "no-store",
+    }
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Failed to fetch review history: HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export async function fetchCodeReviewDetail(id: string): Promise<CodeReviewResponse> {
+  const headers = await getAuthHeaders({
+    "Accept": "application/json",
+  });
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/reviewer/${encodeURIComponent(id)}`,
+    {
+      method: "GET",
+      headers,
+      cache: "no-store",
+    }
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Failed to fetch review details: HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export async function deleteCodeReview(id: string): Promise<void> {
+  const headers = await getAuthHeaders({
+    "Accept": "application/json",
+  });
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/reviewer/${encodeURIComponent(id)}`,
+    {
+      method: "DELETE",
+      headers,
+    }
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Failed to delete review: HTTP ${response.status}`);
+  }
+}
+
+export async function clearCodeReviewHistory(): Promise<void> {
+  const headers = await getAuthHeaders({
+    "Accept": "application/json",
+  });
+
+  const response = await fetch(`${API_BASE_URL}/api/reviewer`, {
+    method: "DELETE",
+    headers,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Failed to clear review history: HTTP ${response.status}`);
+  }
 }
