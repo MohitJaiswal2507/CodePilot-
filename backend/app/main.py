@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import health, tutor, conversations
+from app.api.routes import health, tutor, conversations, reviewer
 from app.core.config import settings
 from app.db.session import engine
 from app.db.base import Base
@@ -27,6 +27,7 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api", tags=["System"])
 app.include_router(tutor.router, prefix="/api", tags=["AI Learning Tutor"])
 app.include_router(conversations.router, prefix="/api", tags=["Conversations"])
+app.include_router(reviewer.router, prefix="/api", tags=["AI Code Reviewer"])
 
 @app.get("/")
 def root():
@@ -36,4 +37,5 @@ def root():
         "health": "/api/health",
         "tutor": "/api/tutor",
         "conversations": "/api/conversations",
+        "reviewer": "/api/reviewer",
     }
