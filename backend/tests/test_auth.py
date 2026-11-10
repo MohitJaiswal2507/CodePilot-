@@ -183,13 +183,42 @@ def test_invalid_issuer_rejected_with_401(mock_jwks):
         assert "issuer" in res.json()["detail"].lower()
 
 
+@pytest.fixture
+def isolated_conversation_users():
+    """
+    Create unique synthetic test user IDs per run and delete only their
+    test conversations/messages on teardown without touching any real data.
+    """
+    user_a = f"test_alpha_{uuid.uuid4().hex[:12]}"
+    user_b = f"test_beta_{uuid.uuid4().hex[:12]}"
+    yield user_a, user_b
+
+    db = SessionLocal()
+    try:
+        conv_ids = [
+            row[0]
+            for row in db.query(Conversation.id)
+            .filter(Conversation.user_id.in_([user_a, user_b]))
+            .all()
+        ]
+        if conv_ids:
+            db.query(Message).filter(Message.conversation_id.in_(conv_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(Conversation).filter(Conversation.id.in_(conv_ids)).delete(
+                synchronize_session=False
+            )
+            db.commit()
+    finally:
+        db.close()
+
+
 # -----------------------------------------------------------------------------
 # 2. Multi-Tenant User Isolation & IDOR Protection Tests
 # -----------------------------------------------------------------------------
 @patch("app.core.auth.get_jwks_client")
-def test_user_owned_conversations_strict_isolation(mock_jwks):
-    user_a = "user_alpha_uuid"
-    user_b = "user_beta_uuid"
+def test_user_owned_conversations_strict_isolation(mock_jwks, isolated_conversation_users):
+    user_a, user_b = isolated_conversation_users
 
     token_a = generate_test_jwt(user_id=user_a, email="alpha@codepilot.ai", alg="EdDSA")
     token_b = generate_test_jwt(user_id=user_b, email="beta@codepilot.ai", alg="EdDSA")

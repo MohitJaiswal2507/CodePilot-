@@ -54,6 +54,42 @@ class Settings(BaseModel):
     NEON_AUTH_AUDIENCE: str = os.getenv("NEON_AUTH_AUDIENCE", "")
     ALLOW_DEV_FALLBACK_AUTH: bool = os.getenv("ALLOW_DEV_FALLBACK_AUTH", "true").lower() in ("true", "1", "yes")
 
+    # Docker Sandbox Execution Engine (Phase 1)
+    SANDBOX_ENABLED: bool = os.getenv("SANDBOX_ENABLED", "true").lower() in ("true", "1", "yes")
+    SANDBOX_DOCKER_PYTHON_IMAGE: str = os.getenv("SANDBOX_DOCKER_PYTHON_IMAGE", "python:3.12-slim")
+    SANDBOX_DOCKER_PYTHON_DIGEST: str = os.getenv(
+        "SANDBOX_DOCKER_PYTHON_DIGEST",
+        "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b",
+    )
+    SANDBOX_DOCKER_JAVA_IMAGE: str = os.getenv("SANDBOX_DOCKER_JAVA_IMAGE", "eclipse-temurin:21-jdk")
+    SANDBOX_DOCKER_JAVA_DIGEST: str = os.getenv(
+        "SANDBOX_DOCKER_JAVA_DIGEST",
+        "sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a",
+    )
+    SANDBOX_DOCKER_CPP_IMAGE: str = os.getenv("SANDBOX_DOCKER_CPP_IMAGE", "gcc:14")
+    SANDBOX_DOCKER_CPP_DIGEST: str = os.getenv(
+        "SANDBOX_DOCKER_CPP_DIGEST",
+        "sha256:a257536c9b7a0ee193c1880f2d691358d2c9760ef0ede3ee741aa243789743c7",
+    )
+    SANDBOX_DOCKER_PULL_POLICY: str = os.getenv("SANDBOX_DOCKER_PULL_POLICY", "never")
+    SANDBOX_PYTHON_MEMORY_MB: int = int(os.getenv("SANDBOX_PYTHON_MEMORY_MB", "128"))
+    SANDBOX_JAVA_MEMORY_MB: int = int(os.getenv("SANDBOX_JAVA_MEMORY_MB", "512"))
+    SANDBOX_CPP_MEMORY_MB: int = int(os.getenv("SANDBOX_CPP_MEMORY_MB", "512"))
+    SANDBOX_CPUS: float = float(os.getenv("SANDBOX_CPUS", "0.5"))
+    SANDBOX_PIDS_LIMIT: int = int(os.getenv("SANDBOX_PIDS_LIMIT", "64"))
+    SANDBOX_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_TIMEOUT_SECONDS", "5"))
+    SANDBOX_MAX_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_MAX_TIMEOUT_SECONDS", "30"))
+    SANDBOX_COMPILE_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_COMPILE_TIMEOUT_SECONDS", "10"))
+    SANDBOX_MAX_COMPILE_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_MAX_COMPILE_TIMEOUT_SECONDS", "30"))
+    SANDBOX_STOP_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_STOP_TIMEOUT_SECONDS", "1"))
+    SANDBOX_MAX_SOURCE_SIZE_BYTES: int = int(os.getenv("SANDBOX_MAX_SOURCE_SIZE_BYTES", str(50 * 1024)))  # 50 KB
+    SANDBOX_MAX_STDIN_SIZE_BYTES: int = int(os.getenv("SANDBOX_MAX_STDIN_SIZE_BYTES", str(64 * 1024)))  # 64 KB
+    SANDBOX_MAX_OUTPUT_SIZE_BYTES: int = int(os.getenv("SANDBOX_MAX_OUTPUT_SIZE_BYTES", str(64 * 1024)))  # 64 KB
+    SANDBOX_MAX_CONCURRENT_EXECUTIONS: int = int(os.getenv("SANDBOX_MAX_CONCURRENT_EXECUTIONS", "4"))
+    SANDBOX_MAX_USER_CONCURRENT_EXECUTIONS: int = int(os.getenv("SANDBOX_MAX_USER_CONCURRENT_EXECUTIONS", "2"))
+    SANDBOX_RATE_LIMIT_REQUESTS: int = int(os.getenv("SANDBOX_RATE_LIMIT_REQUESTS", "15"))
+    SANDBOX_RATE_LIMIT_WINDOW_SECONDS: int = int(os.getenv("SANDBOX_RATE_LIMIT_WINDOW_SECONDS", "60"))
+
     @property
     def resolved_jwks_url(self) -> str:
         if self.NEON_JWKS_URL:
