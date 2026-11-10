@@ -3,11 +3,11 @@ import logging
 from typing import Dict, Any, List, Optional, TypedDict
 from pydantic import ValidationError
 from langgraph.graph import StateGraph, END
-from google import genai
-from google.genai import types
 
 from app.core.config import settings
 from app.services import model_service
+from app.services.llm_gateway import LLMGenerationResult, generate_text
+from app.services.observability import LLMTelemetryEvent, record_llm_telemetry
 from app.schemas.reviewer import (
     CodeReviewResult,
     CodeReviewIssue,
@@ -162,29 +162,20 @@ SOURCE CODE TO REVIEW:
 Perform the comprehensive review and output strictly the required JSON object.
 """
 
+    gw_result: Optional[LLMGenerationResult] = None
     if llm_callable:
         response_text = llm_callable(prompt)
     else:
-        # Call Gemini SDK
-        if not settings.GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY is not configured.")
-
-        client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        config = types.GenerateContentConfig(
+        gw_result = generate_text(
+            prompt=prompt,
             system_instruction=REVIEW_SYSTEM_PROMPT,
+            model=model_name,
             temperature=0.2,
             response_mime_type="application/json",
+            feature="code_review",
+            allow_fallback=False,
         )
-        api_model = model_name
-        if api_model.startswith("models/"):
-            api_model = api_model[len("models/"):]
-
-        response = client.models.generate_content(
-            model=api_model,
-            contents=prompt,
-            config=config,
-        )
-        response_text = response.text or "{}"
+        response_text = gw_result.text or "{}"
 
     # Parse JSON from AI response
     try:
@@ -197,7 +188,25 @@ Perform the comprehensive review and output strictly the required JSON object.
             cleaned_json = cleaned_json[:-3]
         raw_analysis = json.loads(cleaned_json.strip())
     except Exception as exc:
-        logger.warning("Failed to parse raw JSON from AI review: %s. Raw text: %s", exc, response_text[:200])
+        logger.warning("Failed to parse raw JSON from AI review (%s)", type(exc).__name__)
+        record_llm_telemetry(
+            LLMTelemetryEvent(
+                event_type="json_parse_fallback",
+                feature="code_review",
+                model_used=gw_result.model_used if gw_result else model_name,
+                model_version=gw_result.model_version if gw_result else None,
+                prompt_tokens=gw_result.prompt_tokens if gw_result else None,
+                output_tokens=gw_result.output_tokens if gw_result else None,
+                total_tokens=gw_result.total_tokens if gw_result else None,
+                thoughts_tokens=gw_result.thoughts_tokens if gw_result else None,
+                latency_ms=gw_result.latency_ms if gw_result else 0.0,
+                retries=gw_result.retries if gw_result else 0,
+                fallback_used=gw_result.fallback_used if gw_result else False,
+                success=False,
+                error_category="json_parse_error",
+                parse_fallback=True,
+            )
+        )
         raw_analysis = {
             "summary": "Code review completed with unstructured output.",
             "overall_assessment": "needs_improvement",

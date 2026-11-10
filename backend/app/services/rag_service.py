@@ -2,13 +2,17 @@ import logging
 import os
 import re
 import time
-import random
 from typing import List, Dict, Any, Optional
 from google import genai
-from google.genai import types
 from app.core.config import settings
 from app.schemas.tutor import Citation, QueryResponse, ChatMessage
 from app.services.vector_store import VectorStoreService
+from app.services.llm_gateway import (
+    generate_text,
+    is_quota_exhausted_error,
+    is_transient_rate_limit_error,
+    extract_retry_delay_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,48 +168,8 @@ def extract_and_prioritize_citations(
     return supported_citations
 
 # -----------------------------------------------------------------------------
-# Rate-limit, Quota & Error Classification Helpers
+# Query Rewriting & Shared Gemini Gateway Delegation
 # -----------------------------------------------------------------------------
-def is_quota_exhausted_error(err: Optional[Exception]) -> bool:
-    """Identify whether an error represents exhausted quota (daily / plan limit) vs transient rate limit."""
-    if not err:
-        return False
-    err_str = str(err).lower()
-    quota_indicators = [
-        "quota exceeded", "quota_exceeded", "per day", "daily",
-        "free_tier_requests", "exceeded your current quota", "plan and billing"
-    ]
-    return any(phrase in err_str for phrase in quota_indicators)
-
-def is_transient_rate_limit_error(err: Optional[Exception]) -> bool:
-    """Identify if an error is a retryable transient rate limit (429) or temporary server unavailability (503)."""
-    if not err:
-        return False
-    err_str = str(err).lower()
-    is_429 = any(phrase in err_str for phrase in ["429", "resource_exhausted", "too many requests", "rate limit"])
-    return is_429 and not is_quota_exhausted_error(err)
-
-def extract_retry_delay_seconds(err: Exception) -> Optional[float]:
-    """Extract Retry-After or retryDelay from exception if provided by provider."""
-    err_str = str(err)
-    # Check for retryDelay in details: e.g. 'retryDelay': '3s'
-    match_delay = re.search(r"['\"]retryDelay['\"]\s*:\s*['\"](\d+(?:\.\d+)?)s?['\"]", err_str)
-    if match_delay:
-        try:
-            return float(match_delay.group(1))
-        except ValueError:
-            pass
-
-    # Check for text like "retry in 3.5s"
-    match_text = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
-    if match_text:
-        try:
-            return float(match_text.group(1))
-        except ValueError:
-            pass
-
-    return None
-
 def rewrite_query(
     question: str,
     history: List[ChatMessage],
@@ -245,6 +209,7 @@ Standalone search query:"""
                 system_instruction=REWRITE_SYSTEM_PROMPT,
                 model=settings.GEMINI_REWRITE_MODEL,
                 allow_fallback=True,
+                feature="rag_rewrite",
             )
 
         rewritten = rewritten.strip().strip('"').strip("'")
@@ -263,117 +228,24 @@ def call_gemini(
     max_retries: int = 3,
     sleep_fn = time.sleep,
     allow_fallback: bool = False,
+    feature: str = "rag_answer",
 ) -> str:
     """
-    Invoke Gemini API using Google's official google-genai SDK.
-    Includes limited exponential backoff for transient rate limits (429/503),
-    respects retryDelay when <= 15s.
-    If allow_fallback is True, falls back to secondary supported models on total failure.
-    If allow_fallback is False (default when model is selected), strictly queries
-    the target model and returns clear model-specific errors without silent switching.
+    Invoke Gemini API via the centralized LLM gateway (`llm_gateway.generate_text`).
+    Preserves exact function signature, mock client injection, retry/backoff, and fallback behavior.
     """
-    api_key = settings.GEMINI_API_KEY.strip()
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not configured.")
-
-    model_name = (model or settings.GEMINI_MODEL or "gemini-3.5-flash-lite").strip()
-    if model_name.startswith("models/"):
-        model_name = model_name[len("models/"):]
-
-    ai_client = client or genai.Client(api_key=api_key)
-    config = types.GenerateContentConfig(
+    result = generate_text(
+        prompt=prompt,
         system_instruction=system_instruction,
+        model=model,
         temperature=0.2,
+        feature=feature,
+        client=client,
+        max_retries=max_retries,
+        sleep_fn=sleep_fn,
+        allow_fallback=allow_fallback,
     )
-
-    models_to_try = [model_name]
-    if allow_fallback:
-        for fallback in ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]:
-            if fallback not in models_to_try:
-                models_to_try.append(fallback)
-
-    last_error: Optional[Exception] = None
-
-    for current_model in models_to_try:
-        for attempt in range(max_retries):
-            try:
-                response = ai_client.models.generate_content(
-                    model=current_model,
-                    contents=prompt,
-                    config=config,
-                )
-                if response and response.text:
-                    return response.text
-                raise RuntimeError("Received an empty response from the AI model.")
-
-            except Exception as exc:
-                last_error = exc
-                err_str = str(exc)
-                logger.warning(
-                    "Gemini API attempt %d/%d failed with model %s: %s",
-                    attempt + 1, max_retries, current_model, exc
-                )
-
-                # 1. Quota Exhausted: do not loop retry this model; try next model immediately if fallback enabled
-                if is_quota_exhausted_error(exc):
-                    logger.info("Daily quota exhausted for %s", current_model)
-                    break
-
-                # 2. Model 404: break to fallback model immediately
-                if "404" in err_str or "NOT_FOUND" in err_str:
-                    logger.info("Model %s returned 404", current_model)
-                    break
-
-                # 3. Transient rate-limit (429) or server unavailable (503): retry with backoff
-                if is_transient_rate_limit_error(exc) or "503" in err_str or "UNAVAILABLE" in err_str:
-                    if attempt < max_retries - 1:
-                        delay = extract_retry_delay_seconds(exc)
-                        if delay is not None and 0 < delay <= 15:
-                            wait_time = delay
-                        else:
-                            wait_time = (1.0 * (2 ** attempt)) + random.uniform(0.1, 0.4)
-                        logger.info("Transient rate limit/unavailable. Retrying in %.2fs...", wait_time)
-                        sleep_fn(wait_time)
-                        continue
-                    else:
-                        break
-
-                # 4. Authentication error: fail fast
-                if any(x in err_str for x in ["401", "403", "API_KEY_INVALID"]):
-                    raise RuntimeError(
-                        "Gemini API authentication failed. Please verify that GEMINI_API_KEY in backend/.env is valid."
-                    ) from exc
-
-                # Other error: if last attempt, try next model
-                if attempt == max_retries - 1:
-                    break
-
-    # If all models and retries failed, raise specific, clean user-friendly error
-    err_str = str(last_error) if last_error else ""
-    if is_quota_exhausted_error(last_error):
-        raise RuntimeError(
-            f"Gemini API daily quota exceeded for model '{model_name}'. "
-            "Please select a different available model or wait for your daily quota to reset in Google AI Studio."
-        ) from last_error
-
-    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-        raise RuntimeError(
-            f"Gemini API rate limit reached for model '{model_name}' after multiple attempts. Please wait a moment before trying again."
-        ) from last_error
-
-    if "404" in err_str or "NOT_FOUND" in err_str:
-        raise RuntimeError(
-            f"The configured AI model '{model_name}' was not found. Please verify available models or GEMINI_MODEL in backend/.env."
-        ) from last_error
-
-    if "503" in err_str or "UNAVAILABLE" in err_str:
-        raise RuntimeError(
-            "The AI service is temporarily experiencing high traffic spikes. Please try again in a few moments."
-        ) from last_error
-
-    raise RuntimeError(
-        f"Unable to generate response from model '{model_name}' at this moment. Please try again."
-    ) from last_error
+    return result.text
 
 def answer_question(
     question: str,

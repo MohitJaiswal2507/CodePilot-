@@ -40,6 +40,8 @@ class Settings(BaseModel):
     GEMINI_REWRITE_MODEL: str = os.getenv("GEMINI_REWRITE_MODEL", "gemini-3.5-flash-lite")
     GEMINI_ADVANCED_MODEL: str = os.getenv("GEMINI_ADVANCED_MODEL", "gemini-2.5-pro")
     MODEL_CACHE_TTL_SECONDS: int = int(os.getenv("MODEL_CACHE_TTL_SECONDS", "3600"))
+    OBSERVABILITY_ENABLED: bool = os.getenv("OBSERVABILITY_ENABLED", "true").lower() in ("true", "1", "yes")
+    OBSERVABILITY_LOG_PATH: str = os.getenv("OBSERVABILITY_LOG_PATH", "")
     CHROMA_PERSIST_DIR: str = _resolved_chroma
     EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
     MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "15"))
