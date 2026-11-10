@@ -23,12 +23,16 @@ import {
   HelpCircle,
   ChevronRight,
   Info,
+  Terminal,
 } from "lucide-react";
 import {
   submitCodeReview,
   fetchCodeReviewHistory,
   fetchCodeReviewDetail,
   deleteCodeReview,
+  runCode,
+  SandboxApiError,
+  ExecutionResult,
   CodeReviewResult,
   CodeReviewResponse,
   CodeReviewHistoryItem,
@@ -160,9 +164,17 @@ const MONACO_LANG_MAP: Record<SupportedLanguage, string> = {
 export function CodeReviewer() {
   const [language, setLanguage] = useState<SupportedLanguage>("python");
   const [code, setCode] = useState<string>(SAMPLE_CODES.python[0].code);
+  const [stdinInput, setStdinInput] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [reviewResult, setReviewResult] = useState<CodeReviewResult | null>(null);
+  const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
+  const [executionError, setExecutionError] = useState<{
+    title: string;
+    message: string;
+    statusCode?: number;
+  } | null>(null);
   const [activeReviewId, setActiveReviewId] = useState<string | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "issues" | "complexity" | "edge_cases" | "corrected">("overview");
@@ -205,6 +217,64 @@ export function CodeReviewer() {
   const handleClear = () => {
     setCode("");
     setErrorMessage(null);
+  };
+
+  const handleClearConsole = () => {
+    if (isRunning) return;
+    setExecutionResult(null);
+    setExecutionError(null);
+  };
+
+  const handleRunCode = async () => {
+    if (isRunning) return;
+    const trimmed = code.trim();
+    if (!trimmed) {
+      setExecutionResult(null);
+      setExecutionError({
+        title: "Validation Error",
+        message: "Please enter some code in the editor before running.",
+        statusCode: 422,
+      });
+      return;
+    }
+
+    setIsRunning(true);
+    setExecutionError(null);
+    setExecutionResult(null);
+
+    try {
+      const result = await runCode({
+        code,
+        language,
+        stdin: stdinInput.length > 0 ? stdinInput : null,
+      });
+      setExecutionResult(result);
+    } catch (err: unknown) {
+      if (err instanceof SandboxApiError) {
+        if (err.executionResult) {
+          setExecutionResult(err.executionResult);
+        }
+        const titleMap: Record<number, string> = {
+          401: "Authentication Required",
+          422: "Validation Error",
+          429: "Rate or Concurrency Limit Reached",
+          503: "Sandbox Unavailable",
+        };
+        setExecutionError({
+          title: titleMap[err.statusCode] || "Execution Request Failed",
+          message: err.message,
+          statusCode: err.statusCode,
+        });
+      } else {
+        const msg = err instanceof Error ? err.message : "Failed to execute code. Please try again.";
+        setExecutionError({
+          title: "Execution Request Failed",
+          message: msg,
+        });
+      }
+    } finally {
+      setIsRunning(false);
+    }
   };
 
   const handleSubmitReview = async () => {
@@ -316,6 +386,77 @@ export function CodeReviewer() {
     }
   };
 
+  const formatDurationMs = (ms: number) => {
+    if (ms >= 1000) {
+      return `${(ms / 1000).toFixed(2)} s`;
+    }
+    return `${Math.round(ms * 10) / 10} ms`;
+  };
+
+  const getExecutionStatusMeta = (res: ExecutionResult) => {
+    switch (res.status) {
+      case "success":
+        return {
+          label: "Success",
+          classes: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30",
+          icon: CheckCircle2,
+          notice: null,
+        };
+      case "compilation_error":
+        return {
+          label: "Compilation Error",
+          classes: "bg-rose-500/10 text-rose-300 border-rose-500/30",
+          icon: XCircle,
+          notice: "Compilation failed before program execution started.",
+        };
+      case "compilation_timeout":
+        return {
+          label: "Compilation Timeout",
+          classes: "bg-amber-500/10 text-amber-300 border-amber-500/30",
+          icon: Clock,
+          notice: "Compilation exceeded the server compile time limit and was stopped.",
+        };
+      case "runtime_error":
+        return {
+          label: "Runtime Error",
+          classes: "bg-rose-500/10 text-rose-300 border-rose-500/30",
+          icon: AlertCircle,
+          notice: "Program exited with a non-zero status code.",
+        };
+      case "timeout":
+        return {
+          label: "Time Limit Exceeded",
+          classes: "bg-amber-500/10 text-amber-300 border-amber-500/30",
+          icon: Clock,
+          notice: "Execution exceeded the allowed runtime limit and was terminated.",
+        };
+      case "output_limit_exceeded":
+        return {
+          label: "Output Limit Exceeded",
+          classes: "bg-amber-500/10 text-amber-300 border-amber-500/30",
+          icon: AlertTriangle,
+          notice: "Program output exceeded the 64 KB buffer limit and was truncated.",
+        };
+      case "validation_error":
+        return {
+          label: "Validation Error",
+          classes: "bg-rose-500/10 text-rose-300 border-rose-500/30",
+          icon: AlertCircle,
+          notice: "Input did not meet server execution constraints.",
+        };
+      case "infrastructure_error":
+      default:
+        return {
+          label: "Sandbox Unavailable",
+          classes: "bg-rose-500/10 text-rose-300 border-rose-500/30",
+          icon: AlertTriangle,
+          notice: "Code execution sandbox infrastructure is currently unavailable.",
+        };
+    }
+  };
+
+  const stdinByteLength = new TextEncoder().encode(stdinInput).length;
+
   return (
     <div className="space-y-6">
       {/* Top Banner / Workspace Bar */}
@@ -367,7 +508,8 @@ export function CodeReviewer() {
                   <button
                     key={lang}
                     onClick={() => handleLanguageChange(lang)}
-                    className={`px-2.5 py-1 rounded text-xs font-medium transition-colors cursor-pointer ${
+                    disabled={isRunning}
+                    className={`px-2.5 py-1 rounded text-xs font-medium transition-colors cursor-pointer disabled:opacity-50 ${
                       language === lang
                         ? "bg-indigo-600 text-white shadow-sm"
                         : "text-slate-400 hover:text-slate-200"
@@ -386,8 +528,9 @@ export function CodeReviewer() {
                     <button
                       key={idx}
                       onClick={() => handleLoadSample(sample)}
+                      disabled={isRunning}
                       title={sample.description}
-                      className="text-[11px] px-2 py-1 rounded bg-slate-800/60 hover:bg-slate-800 text-slate-300 border border-slate-700/60 hover:text-white transition-colors cursor-pointer"
+                      className="text-[11px] px-2 py-1 rounded bg-slate-800/60 hover:bg-slate-800 text-slate-300 border border-slate-700/60 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
                     >
                       {sample.title.split(" ")[0]}
                     </button>
@@ -399,12 +542,31 @@ export function CodeReviewer() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleClear}
-                  disabled={!code || isSubmitting}
+                  disabled={!code || isSubmitting || isRunning}
                   className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200 text-xs disabled:opacity-40 transition-colors cursor-pointer"
                   title="Clear editor"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   <span>Clear</span>
+                </button>
+
+                <button
+                  onClick={handleRunCode}
+                  disabled={isRunning || !code.trim()}
+                  className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs disabled:opacity-50 transition-colors shadow-lg shadow-emerald-950/40 cursor-pointer"
+                  title="Execute code in isolated sandbox"
+                >
+                  {isRunning ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Running...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>Run Code</span>
+                    </>
+                  )}
                 </button>
 
                 <button
@@ -419,7 +581,7 @@ export function CodeReviewer() {
                     </>
                   ) : (
                     <>
-                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <Sparkles className="w-3.5 h-3.5" />
                       <span>Review Code</span>
                     </>
                   )}
@@ -461,7 +623,7 @@ export function CodeReviewer() {
               </div>
               <div className="flex items-center gap-1.5 text-slate-400">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>FastAPI Zero-Exec Sandbox Protection</span>
+                <span>Isolated Sandbox Execution &amp; Static Analysis</span>
               </div>
             </div>
           </div>
@@ -832,6 +994,232 @@ export function CodeReviewer() {
               </div>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Sandbox Execution Workspace: Standard Input & Console Output */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Standard Input (stdin) Panel (4 cols) */}
+        <div className="lg:col-span-4 rounded-xl border border-slate-800/80 bg-[#0d121f] overflow-hidden flex flex-col">
+          <div className="px-4 py-3 border-b border-slate-800/80 bg-[#090d16] flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <FileCode className="w-4 h-4 text-cyan-400" />
+              <h2 className="text-xs font-semibold text-white">Standard Input (stdin)</h2>
+            </div>
+            {stdinInput.length > 0 && (
+              <button
+                onClick={() => setStdinInput("")}
+                disabled={isRunning}
+                className="text-[11px] text-slate-400 hover:text-slate-200 disabled:opacity-40 transition-colors cursor-pointer"
+              >
+                Clear input
+              </button>
+            )}
+          </div>
+
+          <div className="p-3 flex-1 flex flex-col">
+            <textarea
+              value={stdinInput}
+              onChange={(e) => setStdinInput(e.target.value)}
+              disabled={isRunning}
+              placeholder="Optional program input passed via stdin..."
+              rows={5}
+              aria-label="Standard input"
+              className="w-full flex-1 min-h-[128px] rounded-lg bg-[#070b13] border border-slate-800 focus:border-emerald-500/50 focus:outline-none p-3 font-mono text-xs text-slate-200 placeholder:text-slate-600 resize-y disabled:opacity-60"
+            />
+          </div>
+
+          <div className="px-4 py-2 bg-[#090d16] border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500">
+            <span className={`font-mono ${stdinByteLength > 65536 ? "text-rose-400" : ""}`}>
+              {stdinByteLength.toLocaleString()} / 65,536 bytes
+            </span>
+            <span>Passed separately from source</span>
+          </div>
+        </div>
+
+        {/* Execution Console Output Panel (8 cols) */}
+        <div className="lg:col-span-8 rounded-xl border border-slate-800/80 bg-[#0d121f] overflow-hidden flex flex-col">
+          {/* Console Header */}
+          <div className="px-4 py-3 border-b border-slate-800/80 bg-[#090d16] flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-emerald-400" />
+                <h2 className="text-xs font-semibold text-white">Execution Console</h2>
+              </div>
+
+              {isRunning && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
+                  <RefreshCw className="w-3 h-3 animate-spin" />
+                  Running
+                </span>
+              )}
+
+              {!isRunning && executionResult && (() => {
+                const meta = getExecutionStatusMeta(executionResult);
+                const StatusIcon = meta.icon;
+                return (
+                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${meta.classes}`}>
+                    <StatusIcon className="w-3 h-3" />
+                    {meta.label}
+                  </span>
+                );
+              })()}
+
+              {!isRunning && !executionResult && executionError && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border bg-rose-500/10 text-rose-300 border-rose-500/30">
+                  <AlertCircle className="w-3 h-3" />
+                  {executionError.title}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              {!isRunning && executionResult && (
+                <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-slate-400">
+                  {executionResult.compile_duration_ms !== null && (
+                    <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800">
+                      Compile: {formatDurationMs(executionResult.compile_duration_ms)}
+                    </span>
+                  )}
+                  <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-slate-500" />
+                    {formatDurationMs(executionResult.duration_ms)}
+                  </span>
+                  {executionResult.exit_code !== null && (
+                    <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800">
+                      Exit: {executionResult.exit_code}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <button
+                onClick={handleClearConsole}
+                disabled={isRunning || (!executionResult && !executionError)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-[11px] text-slate-400 hover:text-slate-200 disabled:opacity-40 transition-colors cursor-pointer"
+                title="Clear console output"
+              >
+                <Trash2 className="w-3 h-3" />
+                <span>Clear Console</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Console Body */}
+          <div className="p-4 flex-1 min-h-[168px] max-h-[340px] overflow-y-auto space-y-3 bg-[#070b13]">
+            {/* Loading State */}
+            {isRunning && (
+              <div className="py-10 flex flex-col items-center justify-center text-center space-y-2">
+                <RefreshCw className="w-5 h-5 text-emerald-400 animate-spin" />
+                <p className="text-xs font-medium text-slate-200">
+                  Executing {language === "cpp" ? "C++" : language === "java" ? "Java" : "Python"} code in sandbox...
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Wait for execution to complete before submitting another run.
+                </p>
+              </div>
+            )}
+
+            {/* API / Auth / Rate-limit Error State without ExecutionResult */}
+            {!isRunning && !executionResult && executionError && (
+              <div className="p-3.5 rounded-lg bg-rose-500/10 border border-rose-500/25 flex items-start gap-3 text-xs text-rose-200">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-semibold text-rose-300">{executionError.title}</p>
+                  <p className="text-rose-200/90 leading-relaxed">{executionError.message}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Structured Sandbox Result */}
+            {!isRunning && executionResult && (
+              <div className="space-y-3">
+                {(() => {
+                  const meta = getExecutionStatusMeta(executionResult);
+                  if (!meta.notice) return null;
+                  const NoticeIcon = meta.icon;
+                  const isWarning =
+                    executionResult.status === "timeout" ||
+                    executionResult.status === "compilation_timeout" ||
+                    executionResult.status === "output_limit_exceeded";
+                  return (
+                    <div
+                      className={`p-3 rounded-lg border flex items-start gap-2.5 text-xs ${
+                        isWarning
+                          ? "bg-amber-500/10 border-amber-500/25 text-amber-200"
+                          : "bg-rose-500/10 border-rose-500/25 text-rose-200"
+                      }`}
+                    >
+                      <NoticeIcon className={`w-4 h-4 shrink-0 mt-0.5 ${isWarning ? "text-amber-400" : "text-rose-400"}`} />
+                      <div className="space-y-0.5">
+                        <p className="font-medium">{meta.notice}</p>
+                        {executionResult.truncated && (
+                          <p className="text-[11px] opacity-85">
+                            Output was truncated to stay within the 64 KB console limit.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Compilation Error Diagnostics */}
+                {executionResult.compilation_error && (
+                  <div className="space-y-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-rose-400">
+                      Compilation Error
+                    </span>
+                    <pre className="p-3 rounded-lg bg-[#0b101b] border border-rose-500/25 font-mono text-xs text-rose-300 whitespace-pre-wrap break-words overflow-x-auto leading-relaxed">
+                      {executionResult.compilation_error}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Standard Output */}
+                {executionResult.stdout && (
+                  <div className="space-y-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                      Standard Output
+                    </span>
+                    <pre className="p-3 rounded-lg bg-[#0b101b] border border-slate-800 font-mono text-xs text-emerald-300 whitespace-pre-wrap break-words overflow-x-auto leading-relaxed">
+                      {executionResult.stdout}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Standard Error */}
+                {executionResult.stderr && (
+                  <div className="space-y-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-rose-400">
+                      Standard Error
+                    </span>
+                    <pre className="p-3 rounded-lg bg-[#0b101b] border border-rose-500/25 font-mono text-xs text-rose-300 whitespace-pre-wrap break-words overflow-x-auto leading-relaxed">
+                      {executionResult.stderr}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Empty output for clean success */}
+                {executionResult.status === "success" &&
+                  !executionResult.stdout &&
+                  !executionResult.stderr && (
+                    <p className="text-xs text-slate-400 font-mono py-2">
+                      Program exited cleanly (exit code 0) with no output.
+                    </p>
+                  )}
+              </div>
+            )}
+
+            {/* Empty Initial State */}
+            {!isRunning && !executionResult && !executionError && (
+              <div className="py-10 flex flex-col items-center justify-center text-center space-y-1.5">
+                <Terminal className="w-5 h-5 text-slate-600" />
+                <p className="text-xs text-slate-400">
+                  Click <span className="text-emerald-400 font-semibold">&ldquo;Run Code&rdquo;</span> to execute your code and view stdout, stderr, compiler diagnostics, and runtime duration.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
