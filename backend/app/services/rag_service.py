@@ -2,12 +2,16 @@ import logging
 import os
 import re
 import time
-from typing import List, Dict, Any, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Tuple
 from google import genai
 from app.core.config import settings
 from app.schemas.tutor import Citation, QueryResponse, ChatMessage
 from app.services.vector_store import VectorStoreService
 from app.services.llm_gateway import (
+    LLMGenerationResult,
     generate_text,
     is_quota_exhausted_error,
     is_transient_rate_limit_error,
@@ -15,6 +19,39 @@ from app.services.llm_gateway import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RAGTrace:
+    """
+    Internal trace capturing retrieval metadata, gating decisions, and LLM telemetry
+    for offline evaluation without modifying public QueryResponse schemas.
+    """
+
+    standalone_query: str
+    retrieved_chunks: List[Dict[str, Any]] = field(default_factory=list)
+    max_similarity: float = 0.0
+    threshold_triggered: bool = False
+    clarification_triggered: bool = False
+    rewriter_telemetry: Optional[LLMGenerationResult] = None
+    generation_telemetry: Optional[LLMGenerationResult] = None
+
+
+# Per-task telemetry collector so `call_gemini` preserves its `str` signature and patchability
+_llm_trace_slot: ContextVar[Optional[Dict[str, Optional[LLMGenerationResult]]]] = ContextVar(
+    "_llm_trace_slot",
+    default=None,
+)
+
+
+@contextmanager
+def _capture_llm_telemetry():
+    slot: Dict[str, Optional[LLMGenerationResult]] = {"result": None}
+    token = _llm_trace_slot.set(slot)
+    try:
+        yield slot
+    finally:
+        _llm_trace_slot.reset(token)
 
 # Base system prompt enforcing curriculum grounding, conversational awareness, and prompt injection defense
 SYSTEM_PROMPT = """You are CodePilot AI, a computer science learning tutor.
@@ -245,9 +282,12 @@ def call_gemini(
         sleep_fn=sleep_fn,
         allow_fallback=allow_fallback,
     )
+    slot = _llm_trace_slot.get()
+    if slot is not None:
+        slot["result"] = result
     return result.text
 
-def answer_question(
+def answer_question_with_trace(
     question: str,
     user_id: Optional[str] = None,
     vector_store: Optional[VectorStoreService] = None,
@@ -257,16 +297,11 @@ def answer_question(
     llm_callable = None,
     rewrite_callable = None,
     model: Optional[str] = None,
-) -> QueryResponse:
+) -> Tuple[QueryResponse, RAGTrace]:
     """
-    Orchestrate Conversation-Aware RAG with strict multi-user data isolation:
-    1. Validate authenticated user identity.
-    2. Rewrite ambiguous follow-ups into standalone retrieval queries naming the active topic.
-    3. Check for clarification requests on genuinely ambiguous questions.
-    4. Retrieve fresh relevant chunks from ChromaDB filtered strictly by user_id.
-    5. Construct prompt combining reference materials, conversation history, and student question.
-    6. Call selected LLM to generate curriculum-grounded answer (with rate-limit backoff & model validation).
-    7. Extract and prioritize verified source citations.
+    Internal traced version of `answer_question` returning `(QueryResponse, RAGTrace)`.
+    Captures retrieval chunks, similarity threshold decisions, clarification flags,
+    and Gemini gateway telemetry without modifying public API responses.
     """
     clean_user_id = str(user_id).strip() if user_id else ""
     if not clean_user_id:
@@ -282,17 +317,20 @@ def answer_question(
 
     # 1. Standalone Query Rewriting
     standalone_query = question
+    rewriter_telemetry: Optional[LLMGenerationResult] = None
     if chat_history:
-        standalone_query = rewrite_query(
-            question=question,
-            history=chat_history,
-            llm_callable=rewrite_callable,
-        )
+        with _capture_llm_telemetry() as rewrite_slot:
+            standalone_query = rewrite_query(
+                question=question,
+                history=chat_history,
+                llm_callable=rewrite_callable,
+            )
+            rewriter_telemetry = rewrite_slot["result"]
 
     # 2. Check if the rewriter requested clarification for genuine ambiguity
     if standalone_query.startswith("CLARIFY:"):
         clarification_msg = standalone_query[len("CLARIFY:"):].strip()
-        return QueryResponse(
+        response = QueryResponse(
             answer=clarification_msg or "Could you clarify which programming concept or topic you are referring to?",
             citations=[],
             insufficient_context=False,
@@ -301,6 +339,16 @@ def answer_question(
             is_error=False,
             model_used=active_model,
         )
+        trace = RAGTrace(
+            standalone_query=standalone_query,
+            retrieved_chunks=[],
+            max_similarity=0.0,
+            threshold_triggered=False,
+            clarification_triggered=True,
+            rewriter_telemetry=rewriter_telemetry,
+            generation_telemetry=None,
+        )
+        return response, trace
 
     # 3. Fresh Vector Retrieval using the standalone query with strict user ownership filter
     store = vector_store or VectorStoreService.get_instance()
@@ -321,7 +369,7 @@ def answer_question(
 
     # 4. Check for empty context
     if not retrieved_chunks:
-        return QueryResponse(
+        response = QueryResponse(
             answer="I cannot find sufficient evidence in the uploaded learning materials to answer this question. Please upload relevant course materials or adjust your query.",
             citations=[],
             insufficient_context=True,
@@ -330,11 +378,21 @@ def answer_question(
             is_error=False,
             model_used=active_model,
         )
+        trace = RAGTrace(
+            standalone_query=standalone_query,
+            retrieved_chunks=[],
+            max_similarity=0.0,
+            threshold_triggered=False,
+            clarification_triggered=False,
+            rewriter_telemetry=rewriter_telemetry,
+            generation_telemetry=None,
+        )
+        return response, trace
 
     # 5. Check maximum similarity against threshold
     max_similarity = max((c.get("similarity", 0.0) for c in retrieved_chunks), default=0.0)
     if max_similarity < settings.SIMILARITY_THRESHOLD:
-        return QueryResponse(
+        response = QueryResponse(
             answer="I cannot find sufficient evidence in the uploaded learning materials to answer this question accurately. The closest retrieved passages have low relevance to your query.",
             citations=[],
             insufficient_context=True,
@@ -343,6 +401,16 @@ def answer_question(
             is_error=False,
             model_used=active_model,
         )
+        trace = RAGTrace(
+            standalone_query=standalone_query,
+            retrieved_chunks=list(retrieved_chunks),
+            max_similarity=max_similarity,
+            threshold_triggered=True,
+            clarification_triggered=False,
+            rewriter_telemetry=rewriter_telemetry,
+            generation_telemetry=None,
+        )
+        return response, trace
 
     # 6. Build prompt with reference materials and conversational context
     context_block = build_context_block(retrieved_chunks)
@@ -365,7 +433,7 @@ def answer_question(
             f"**From {c.document_name} (Page {c.page_number}):**\n> {c.snippet}"
             for c in citations[:3]
         )
-        return QueryResponse(
+        response = QueryResponse(
             answer=(
                 f"**Retrieved Learning Context (Gemini API key not configured):**\n\n"
                 f"{context_snippets}\n\n"
@@ -378,11 +446,24 @@ def answer_question(
             is_error=False,
             model_used=active_model,
         )
+        trace = RAGTrace(
+            standalone_query=standalone_query,
+            retrieved_chunks=list(retrieved_chunks),
+            max_similarity=max_similarity,
+            threshold_triggered=False,
+            clarification_triggered=False,
+            rewriter_telemetry=rewriter_telemetry,
+            generation_telemetry=None,
+        )
+        return response, trace
 
     llm_func = llm_callable or (lambda p: call_gemini(prompt=p, model=active_model, allow_fallback=False))
+    generation_telemetry: Optional[LLMGenerationResult] = None
 
     try:
-        answer_text = llm_func(prompt)
+        with _capture_llm_telemetry() as gen_slot:
+            answer_text = llm_func(prompt)
+            generation_telemetry = gen_slot["result"]
     except Exception as err:
         logger.error("Error communicating with AI model (%s): %s", active_model, err, exc_info=True)
         error_msg = str(err).strip()
@@ -390,7 +471,7 @@ def answer_question(
             error_msg = f"An error occurred while communicating with model '{active_model}'. Please try again."
         # IMPORTANT: Preserve retrieved chunks and NEVER mark as insufficient context on API failure
         citations = build_citations(retrieved_chunks)
-        return QueryResponse(
+        response = QueryResponse(
             answer=f"Error communicating with AI model: {error_msg}",
             citations=citations,
             insufficient_context=False, # Never convert API error to insufficient context!
@@ -399,6 +480,16 @@ def answer_question(
             is_error=True, # Explicitly flagged as provider/service error
             model_used=active_model,
         )
+        trace = RAGTrace(
+            standalone_query=standalone_query,
+            retrieved_chunks=list(retrieved_chunks),
+            max_similarity=max_similarity,
+            threshold_triggered=False,
+            clarification_triggered=False,
+            rewriter_telemetry=rewriter_telemetry,
+            generation_telemetry=generation_telemetry,
+        )
+        return response, trace
 
     insufficient = "cannot find sufficient evidence" in answer_text.lower()
     citations = extract_and_prioritize_citations(
@@ -407,7 +498,7 @@ def answer_question(
         insufficient_context=insufficient,
     )
 
-    return QueryResponse(
+    response = QueryResponse(
         answer=answer_text,
         citations=citations,
         insufficient_context=insufficient,
@@ -416,3 +507,47 @@ def answer_question(
         is_error=False,
         model_used=active_model,
     )
+    trace = RAGTrace(
+        standalone_query=standalone_query,
+        retrieved_chunks=list(retrieved_chunks),
+        max_similarity=max_similarity,
+        threshold_triggered=False,
+        clarification_triggered=False,
+        rewriter_telemetry=rewriter_telemetry,
+        generation_telemetry=generation_telemetry,
+    )
+    return response, trace
+
+def answer_question(
+    question: str,
+    user_id: Optional[str] = None,
+    vector_store: Optional[VectorStoreService] = None,
+    document_filter: Optional[str] = None,
+    top_k: int = 4,
+    history: Optional[List[ChatMessage]] = None,
+    llm_callable = None,
+    rewrite_callable = None,
+    model: Optional[str] = None,
+) -> QueryResponse:
+    """
+    Orchestrate Conversation-Aware RAG with strict multi-user data isolation:
+    1. Validate authenticated user identity.
+    2. Rewrite ambiguous follow-ups into standalone retrieval queries naming the active topic.
+    3. Check for clarification requests on genuinely ambiguous questions.
+    4. Retrieve fresh relevant chunks from ChromaDB filtered strictly by user_id.
+    5. Construct prompt combining reference materials, conversation history, and student question.
+    6. Call selected LLM to generate curriculum-grounded answer (with rate-limit backoff & model validation).
+    7. Extract and prioritize verified source citations.
+    """
+    response, _ = answer_question_with_trace(
+        question=question,
+        user_id=user_id,
+        vector_store=vector_store,
+        document_filter=document_filter,
+        top_k=top_k,
+        history=history,
+        llm_callable=llm_callable,
+        rewrite_callable=rewrite_callable,
+        model=model,
+    )
+    return response

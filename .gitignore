@@ -81,3 +81,7 @@ chroma_data/
 local_data/
 *.rdb
 *.aof
+
+# Evaluation artifacts & temporary vector stores
+backend/evals/results/
+backend/evals/tmp_chroma/
