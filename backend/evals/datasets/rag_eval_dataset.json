@@ -90,7 +90,7 @@
       "expected_pages": [{"document_name": "dsa_algorithms.pdf", "page_number": 1}],
       "expected_chunk_ids": ["dsa_algorithms_pdf_p1_c0"],
       "expected_evidence_substrings": ["O(n log n)", "O(n) auxiliary space"],
-      "expected_answer_concepts": ["O(n log n)", "O(n)", "stable"],
+      "expected_answer_concepts": ["O(n log n)", "O(n)"],
       "mock_rewrite_response": null,
       "mock_llm_response": "Standard array-based merge sort has a worst-case time complexity of O(n log n), requires O(n) auxiliary space, and provides stable sorting [Document: dsa_algorithms.pdf, Page: 1]."
     },

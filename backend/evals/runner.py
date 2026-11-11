@@ -67,18 +67,52 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional Gemini model override for --judge evaluation.",
     )
+    parser.add_argument(
+        "--case-ids",
+        type=str,
+        default=None,
+        help="Optional comma-separated case IDs to evaluate (e.g., rag_ans_01,rag_conv_01,rag_unans_01).",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Optional positive integer limiting evaluation to the first N cases in dataset order.",
+    )
+    parser.add_argument(
+        "--save-answers",
+        action="store_true",
+        help="Opt-in: include standalone_query and generated_answer in the local JSON report (omitted by default).",
+    )
     return parser
 
 
-def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+def _parse_case_ids(raw: Optional[str]) -> Optional[List[str]]:
+    if raw is None:
+        return None
+    parts = [part.strip() for part in raw.split(",")]
+    if not parts or any(not p for p in parts):
+        raise ValueError("--case-ids must be a non-empty comma-separated list of valid case IDs.")
+    if len(parts) != len(set(parts)):
+        raise ValueError("--case-ids cannot contain duplicate case IDs.")
+    return parts
+
+
+def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Optional[List[str]]:
     if args.judge and args.mode != "live":
         parser.error("--judge requires --mode live and cannot be used in offline mode.")
     if args.top_k is not None and (args.top_k < 1 or args.top_k > 20):
         parser.error("--top-k must be between 1 and 20.")
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be a positive integer >= 1.")
     if args.model is not None and args.mode != "live":
         parser.error("--model override is only applicable with --mode live.")
     if args.dataset is not None and not args.dataset.exists():
         parser.error(f"Dataset file not found: {args.dataset}")
+    try:
+        return _parse_case_ids(args.case_ids)
+    except ValueError as exc:
+        parser.error(str(exc))
 
 
 def _fmt_metric(val: Optional[float]) -> str:
@@ -88,7 +122,7 @@ def _fmt_metric(val: Optional[float]) -> str:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    validate_args(args, parser)
+    parsed_case_ids = validate_args(args, parser)
 
     try:
         report = run_rag_evaluation(
@@ -99,6 +133,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             use_judge=args.judge,
             model=args.model,
             judge_model=args.judge_model,
+            case_ids=parsed_case_ids,
+            limit=args.limit,
+            save_answers=args.save_answers,
         )
     except Exception as exc:
         print(f"[ERROR] Evaluation failed: {exc}", file=sys.stderr)

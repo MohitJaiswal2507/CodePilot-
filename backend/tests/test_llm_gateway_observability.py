@@ -298,3 +298,203 @@ def test_observability_io_failure_is_safe_and_sensitive_exc_not_logged(tmp_path,
     assert "super_secret_api_key_999" not in raw
     assert json.loads(raw.strip())["error_category"] == "api_error"
 
+
+# ==============================================================================
+# 3. REQUEST TIMEOUT & PER-ATTEMPT LATENCY TELEMETRY TESTS
+# ==============================================================================
+
+def test_gateway_passes_configured_timeout_via_http_options(monkeypatch):
+    from google.genai import types
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "test_key_timeout_cfg")
+    monkeypatch.setattr(settings, "GEMINI_REQUEST_TIMEOUT_MS", 45000)
+    monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", False)
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = _make_gemini_response("OK")
+
+    with patch("app.services.llm_gateway.genai.Client", return_value=mock_client) as mock_ctor:
+        res = generate_text(prompt="Ping", model="gemini-3.5-flash-lite")
+
+    assert res.text == "OK"
+    mock_ctor.assert_called_once()
+    call_kwargs = mock_ctor.call_args.kwargs
+    assert call_kwargs["api_key"] == "test_key_timeout_cfg"
+    assert isinstance(call_kwargs["http_options"], types.HttpOptions)
+    assert call_kwargs["http_options"].timeout == 45000
+
+
+def test_gateway_measures_attempt_latency_separately_from_total_latency(tmp_path, monkeypatch):
+    log_file = tmp_path / "attempt_latency.jsonl"
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "test_key_retry")
+    monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", True)
+    monkeypatch.setattr(settings, "OBSERVABILITY_LOG_PATH", str(log_file))
+
+    # Deterministic virtual clock:
+    # wall_start=0.0, attempt1_start=0.0, attempt1_fail=0.05 (50ms),
+    # sleep adds +2.0s -> attempt2_start=2.05, attempt2_success=2.12 (70ms, total=2120ms)
+    clock = {"t": 0.0}
+
+    def fake_perf_counter():
+        return clock["t"]
+
+    def fake_sleep(_sec):
+        clock["t"] += 2.0
+
+    calls = {"n": 0}
+
+    def fake_generate_content(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            clock["t"] += 0.05
+            raise Exception("503 UNAVAILABLE")
+        clock["t"] += 0.07
+        return _make_gemini_response("Recovered response")
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = fake_generate_content
+
+    with patch("app.services.llm_gateway.time.perf_counter", side_effect=fake_perf_counter):
+        res = generate_text(
+            prompt="Explain quicksort",
+            model="gemini-3.5-flash-lite",
+            feature="rag_answer",
+            client=mock_client,
+            max_retries=2,
+            sleep_fn=fake_sleep,
+        )
+
+    assert res.retries == 1
+    assert res.attempt_latency_ms == pytest.approx(70.0)
+    assert res.attempt_latencies_ms == pytest.approx([50.0, 70.0])
+    assert res.latency_ms == pytest.approx(2120.0)
+    assert res.attempt_latency_ms < res.latency_ms
+
+    record = json.loads(log_file.read_text(encoding="utf-8").strip())
+    assert record["attempt_latency_ms"] == pytest.approx(70.0)
+    assert record["attempt_latencies_ms"] == pytest.approx([50.0, 70.0])
+    assert record["latency_ms"] == pytest.approx(2120.0)
+    assert record["retries"] == 1
+    assert record["success"] is True
+
+
+def test_timeout_failure_records_timeout_telemetry_without_leaks(tmp_path, monkeypatch):
+    import httpx
+
+    log_file = tmp_path / "timeout_telemetry.jsonl"
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "secret_timeout_api_key")
+    monkeypatch.setattr(settings, "GEMINI_REQUEST_TIMEOUT_MS", 1500)
+    monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", True)
+    monkeypatch.setattr(settings, "OBSERVABILITY_LOG_PATH", str(log_file))
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = httpx.ReadTimeout(
+        "Read timed out for prompt='SENSITIVE_PROMPT_TEXT'"
+    )
+
+    with pytest.raises(RuntimeError, match="timed out after 1500ms"):
+        generate_text(
+            prompt="SENSITIVE_PROMPT_TEXT",
+            model="gemini-3.8-flash",
+            feature="rag_answer",
+            client=mock_client,
+            max_retries=3,
+            allow_fallback=False,
+        )
+
+    # Timeout fails fast per model without stacking full timeout retries
+    assert mock_client.models.generate_content.call_count == 1
+    raw = log_file.read_text(encoding="utf-8")
+    assert "SENSITIVE_PROMPT_TEXT" not in raw
+    assert "secret_timeout_api_key" not in raw
+    record = json.loads(raw.strip())
+    assert record["success"] is False
+    assert record["error_category"] == "timeout"
+    assert record["prompt_tokens"] is None
+    assert record["output_tokens"] is None
+    assert record["total_tokens"] is None
+    assert record["thoughts_tokens"] is None
+    assert record["attempt_latency_ms"] is not None
+    assert len(record["attempt_latencies_ms"]) == 1
+    assert record["model_used"] == "gemini-3.8-flash"
+
+    # Raised exception also carries safe failure telemetry without prompt/answer/key leakage
+    try:
+        generate_text(
+            prompt="SENSITIVE_PROMPT_TEXT",
+            model="gemini-3.8-flash",
+            feature="rag_answer",
+            client=mock_client,
+            max_retries=1,
+            allow_fallback=False,
+        )
+    except RuntimeError as raised_err:
+        tel = getattr(raised_err, "telemetry_result", None)
+        assert tel is not None
+        assert tel.success is False
+        assert tel.error_category == "timeout"
+        assert tel.model_used == "gemini-3.8-flash"
+        assert tel.prompt_tokens is None
+        assert tel.output_tokens is None
+        assert tel.total_tokens is None
+        assert tel.thoughts_tokens is None
+        assert tel.text == ""
+        assert tel.attempt_latency_ms is not None
+        assert len(tel.attempt_latencies_ms) == 1
+        assert "SENSITIVE_PROMPT_TEXT" not in tel.model_dump_json()
+        assert "secret_timeout_api_key" not in tel.model_dump_json()
+
+
+def test_timeout_triggers_fallback_when_enabled(monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "test_key_fb")
+    monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", False)
+
+    calls = []
+
+    def side_effect(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "gemini-slow-primary":
+            raise TimeoutError("Deadline exceeded")
+        return _make_gemini_response("Fallback ok")
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = side_effect
+
+    res = generate_text(
+        prompt="Test fallback on timeout",
+        model="gemini-slow-primary",
+        client=mock_client,
+        allow_fallback=True,
+        fallback_models=["gemini-fast-fallback"],
+    )
+
+    assert calls == ["gemini-slow-primary", "gemini-fast-fallback"]
+    assert res.fallback_used is True
+    assert res.model_used == "gemini-fast-fallback"
+    assert len(res.attempt_latencies_ms) == 2
+
+
+def test_timeout_setting_parsing_policies(monkeypatch):
+    from app.core.config import Settings, parse_positive_int_env
+
+    # Missing value -> default 120000
+    monkeypatch.delenv("GEMINI_REQUEST_TIMEOUT_MS", raising=False)
+    assert Settings().GEMINI_REQUEST_TIMEOUT_MS == 120000
+
+    # Empty or whitespace-only -> default 120000
+    for blank in ("", "   ", "\t\n"):
+        monkeypatch.setenv("GEMINI_REQUEST_TIMEOUT_MS", blank)
+        assert Settings().GEMINI_REQUEST_TIMEOUT_MS == 120000
+
+    # Valid positive integer (including surrounding whitespace)
+    monkeypatch.setenv("GEMINI_REQUEST_TIMEOUT_MS", " 45000 ")
+    assert Settings().GEMINI_REQUEST_TIMEOUT_MS == 45000
+
+    # Invalid non-numeric or non-positive -> explicit ValueError
+    for bad in ("abc", "12.5", "0", "-100"):
+        monkeypatch.setenv("GEMINI_REQUEST_TIMEOUT_MS", bad)
+        with pytest.raises(ValueError, match="GEMINI_REQUEST_TIMEOUT_MS"):
+            Settings()
+        with pytest.raises(ValueError, match="GEMINI_REQUEST_TIMEOUT_MS"):
+            parse_positive_int_env(bad, 120000, "GEMINI_REQUEST_TIMEOUT_MS")
+

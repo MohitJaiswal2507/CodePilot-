@@ -15,6 +15,12 @@ from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
+try:
+    import httpx
+    _TIMEOUT_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (TimeoutError, httpx.TimeoutException)
+except ImportError:
+    _TIMEOUT_EXCEPTION_TYPES = (TimeoutError,)
+
 from app.core.config import settings
 from app.services.observability import LLMTelemetryEvent, record_llm_telemetry
 
@@ -34,8 +40,68 @@ class LLMGenerationResult(BaseModel):
     total_tokens: Optional[int] = None
     thoughts_tokens: Optional[int] = None
     latency_ms: float = 0.0
+    attempt_latency_ms: Optional[float] = None
+    attempt_latencies_ms: Optional[List[float]] = None
     retries: int = 0
     fallback_used: bool = False
+    success: bool = True
+    error_category: Optional[str] = None
+
+
+def _record_and_build_result(
+    *,
+    feature: str,
+    model_used: str,
+    text: str = "",
+    model_version: Optional[str] = None,
+    prompt_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+    thoughts_tokens: Optional[int] = None,
+    latency_ms: float = 0.0,
+    attempt_latency_ms: Optional[float] = None,
+    attempt_latencies_ms: Optional[List[float]] = None,
+    retries: int = 0,
+    fallback_used: bool = False,
+    success: bool = True,
+    error_category: Optional[str] = None,
+) -> LLMGenerationResult:
+    """Emit privacy-safe telemetry and build matching internal gateway result."""
+    latencies_copy = list(attempt_latencies_ms) if attempt_latencies_ms is not None else None
+    record_llm_telemetry(
+        LLMTelemetryEvent(
+            feature=feature,
+            model_used=model_used,
+            model_version=model_version,
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            thoughts_tokens=thoughts_tokens,
+            latency_ms=latency_ms,
+            attempt_latency_ms=attempt_latency_ms,
+            attempt_latencies_ms=latencies_copy,
+            retries=retries,
+            fallback_used=fallback_used,
+            success=success,
+            error_category=error_category,
+        )
+    )
+    return LLMGenerationResult(
+        text=text,
+        model_used=model_used,
+        model_version=model_version,
+        prompt_tokens=prompt_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        thoughts_tokens=thoughts_tokens,
+        latency_ms=latency_ms,
+        attempt_latency_ms=attempt_latency_ms,
+        attempt_latencies_ms=latencies_copy,
+        retries=retries,
+        fallback_used=fallback_used,
+        success=success,
+        error_category=error_category,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -88,6 +154,19 @@ def extract_retry_delay_seconds(err: Exception) -> Optional[float]:
     return None
 
 
+def is_timeout_error(err: Optional[Exception]) -> bool:
+    """Detect request/SDK timeout errors across Python, httpx, and gRPC/HTTP status messages."""
+    cur: Optional[BaseException] = err
+    visited: set[int] = set()
+    while cur is not None and id(cur) not in visited:
+        visited.add(id(cur))
+        if isinstance(cur, _TIMEOUT_EXCEPTION_TYPES):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    err_str = str(err).lower() if err else ""
+    return any(token in err_str for token in ("timed out", "timeout", "deadline_exceeded", "504"))
+
+
 def classify_error_category(err: Optional[Exception]) -> str:
     """Map an exception to a safe operational error category without leaking payloads."""
     if not err:
@@ -97,6 +176,8 @@ def classify_error_category(err: Optional[Exception]) -> str:
     err_str = str(err)
     if is_transient_rate_limit_error(err) or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
         return "rate_limit"
+    if is_timeout_error(err):
+        return "timeout"
     if "404" in err_str or "NOT_FOUND" in err_str:
         return "model_not_found"
     if "503" in err_str or "UNAVAILABLE" in err_str:
@@ -152,21 +233,27 @@ def generate_text(
     """
     api_key = settings.GEMINI_API_KEY.strip()
     if not api_key:
-        record_llm_telemetry(
-            LLMTelemetryEvent(
-                feature=feature,
-                model_used=_normalize_model_id(model),
-                latency_ms=0.0,
-                retries=0,
-                fallback_used=False,
-                success=False,
-                error_category="missing_api_key",
-            )
+        failure_telemetry = _record_and_build_result(
+            feature=feature,
+            model_used=_normalize_model_id(model),
+            latency_ms=0.0,
+            attempt_latency_ms=None,
+            attempt_latencies_ms=[],
+            retries=0,
+            fallback_used=False,
+            success=False,
+            error_category="missing_api_key",
         )
-        raise ValueError("GEMINI_API_KEY is not configured.")
+        missing_key_err = ValueError("GEMINI_API_KEY is not configured.")
+        setattr(missing_key_err, "telemetry_result", failure_telemetry)
+        raise missing_key_err
 
     primary_model = _normalize_model_id(model)
-    ai_client = client or genai.Client(api_key=api_key)
+    timeout_ms = max(1, int(getattr(settings, "GEMINI_REQUEST_TIMEOUT_MS", 120000)))
+    ai_client = client or genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=timeout_ms),
+    )
 
     config_kwargs: dict[str, Any] = {"temperature": temperature}
     if system_instruction is not None:
@@ -184,6 +271,8 @@ def generate_text(
     last_error: Optional[Exception] = None
     last_attempted_model = primary_model
     retries_count = 0
+    attempt_latencies_ms: List[float] = []
+    last_attempt_latency_ms: Optional[float] = None
     wall_start = time.perf_counter()
 
     for current_model in models_to_try:
@@ -191,6 +280,7 @@ def generate_text(
         fallback_used = current_model != primary_model
 
         for attempt in range(max_retries):
+            attempt_start = time.perf_counter()
             try:
                 response = ai_client.models.generate_content(
                     model=current_model,
@@ -199,7 +289,11 @@ def generate_text(
                 )
                 text = getattr(response, "text", None) if response else None
                 if text:
-                    latency_ms = round((time.perf_counter() - wall_start) * 1000.0, 2)
+                    now = time.perf_counter()
+                    attempt_latency_ms = round((now - attempt_start) * 1000.0, 2)
+                    latency_ms = round((now - wall_start) * 1000.0, 2)
+                    attempt_latencies_ms.append(attempt_latency_ms)
+                    last_attempt_latency_ms = attempt_latency_ms
                     usage = getattr(response, "usage_metadata", None)
                     prompt_tokens = _safe_int(getattr(usage, "prompt_token_count", None)) if usage else None
                     output_tokens = _safe_int(getattr(usage, "candidates_token_count", None)) if usage else None
@@ -207,38 +301,29 @@ def generate_text(
                     thoughts_tokens = _safe_int(getattr(usage, "thoughts_token_count", None)) if usage else None
                     model_version = _safe_str(getattr(response, "model_version", None))
 
-                    record_llm_telemetry(
-                        LLMTelemetryEvent(
-                            feature=feature,
-                            model_used=current_model,
-                            model_version=model_version,
-                            prompt_tokens=prompt_tokens,
-                            output_tokens=output_tokens,
-                            total_tokens=total_tokens,
-                            thoughts_tokens=thoughts_tokens,
-                            latency_ms=latency_ms,
-                            retries=retries_count,
-                            fallback_used=fallback_used,
-                            success=True,
-                            error_category=None,
-                        )
-                    )
-
-                    return LLMGenerationResult(
-                        text=text,
+                    return _record_and_build_result(
+                        feature=feature,
                         model_used=current_model,
+                        text=text,
                         model_version=model_version,
                         prompt_tokens=prompt_tokens,
                         output_tokens=output_tokens,
                         total_tokens=total_tokens,
                         thoughts_tokens=thoughts_tokens,
                         latency_ms=latency_ms,
+                        attempt_latency_ms=attempt_latency_ms,
+                        attempt_latencies_ms=attempt_latencies_ms,
                         retries=retries_count,
                         fallback_used=fallback_used,
+                        success=True,
+                        error_category=None,
                     )
                 raise RuntimeError("Received an empty response from the AI model.")
 
             except Exception as exc:
+                attempt_latency_ms = round((time.perf_counter() - attempt_start) * 1000.0, 2)
+                attempt_latencies_ms.append(attempt_latency_ms)
+                last_attempt_latency_ms = attempt_latency_ms
                 last_error = exc
                 err_str = str(exc)
                 logger.warning(
@@ -259,7 +344,12 @@ def generate_text(
                     logger.info("Model %s returned 404", current_model)
                     break
 
-                # 3. Transient rate limit (429) or server unavailable (503): retry with backoff
+                # 3. Request timeout: avoid stacking full timeout waits; move to fallback if enabled
+                if is_timeout_error(exc):
+                    logger.info("Request timed out for %s after %.2fms", current_model, attempt_latency_ms)
+                    break
+
+                # 4. Transient rate limit (429) or server unavailable (503): retry with backoff
                 if is_transient_rate_limit_error(exc) or "503" in err_str or "UNAVAILABLE" in err_str:
                     if attempt < max_retries - 1:
                         retries_count += 1
@@ -273,64 +363,70 @@ def generate_text(
                         continue
                     break
 
-                # 4. Authentication error: fail fast and emit failure telemetry
+                # 5. Authentication error: fail fast and emit failure telemetry
                 if any(x in err_str for x in ["401", "403", "API_KEY_INVALID"]):
                     latency_ms = round((time.perf_counter() - wall_start) * 1000.0, 2)
-                    record_llm_telemetry(
-                        LLMTelemetryEvent(
-                            feature=feature,
-                            model_used=current_model,
-                            latency_ms=latency_ms,
-                            retries=retries_count,
-                            fallback_used=fallback_used,
-                            success=False,
-                            error_category="auth_error",
-                        )
+                    failure_telemetry = _record_and_build_result(
+                        feature=feature,
+                        model_used=current_model,
+                        latency_ms=latency_ms,
+                        attempt_latency_ms=last_attempt_latency_ms,
+                        attempt_latencies_ms=attempt_latencies_ms,
+                        retries=retries_count,
+                        fallback_used=fallback_used,
+                        success=False,
+                        error_category="auth_error",
                     )
-                    raise RuntimeError(
+                    auth_err = RuntimeError(
                         "Gemini API authentication failed. Please verify that GEMINI_API_KEY in backend/.env is valid."
-                    ) from exc
+                    )
+                    setattr(auth_err, "telemetry_result", failure_telemetry)
+                    raise auth_err from exc
 
                 if attempt == max_retries - 1:
                     break
 
     latency_ms = round((time.perf_counter() - wall_start) * 1000.0, 2)
     error_category = classify_error_category(last_error)
-    record_llm_telemetry(
-        LLMTelemetryEvent(
-            feature=feature,
-            model_used=last_attempted_model,
-            latency_ms=latency_ms,
-            retries=retries_count,
-            fallback_used=(last_attempted_model != primary_model),
-            success=False,
-            error_category=error_category,
-        )
+    failure_telemetry = _record_and_build_result(
+        feature=feature,
+        model_used=last_attempted_model,
+        latency_ms=latency_ms,
+        attempt_latency_ms=last_attempt_latency_ms,
+        attempt_latencies_ms=attempt_latencies_ms,
+        retries=retries_count,
+        fallback_used=(last_attempted_model != primary_model),
+        success=False,
+        error_category=error_category,
     )
 
     err_str = str(last_error) if last_error else ""
     if is_quota_exhausted_error(last_error):
-        raise RuntimeError(
+        out_err = RuntimeError(
             f"Gemini API daily quota exceeded for model '{primary_model}'. "
             "Please select a different available model or wait for your daily quota to reset in Google AI Studio."
-        ) from last_error
-
-    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-        raise RuntimeError(
+        )
+    elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+        out_err = RuntimeError(
             f"Gemini API rate limit reached for model '{primary_model}' after multiple attempts. Please wait a moment before trying again."
-        ) from last_error
-
-    if "404" in err_str or "NOT_FOUND" in err_str:
-        raise RuntimeError(
+        )
+    elif is_timeout_error(last_error):
+        out_err = RuntimeError(
+            f"Gemini API request timed out after {timeout_ms}ms for model '{primary_model}'. Please try again."
+        )
+    elif "404" in err_str or "NOT_FOUND" in err_str:
+        out_err = RuntimeError(
             f"The configured AI model '{primary_model}' was not found. Please verify available models or GEMINI_MODEL in backend/.env."
-        ) from last_error
-
-    if "503" in err_str or "UNAVAILABLE" in err_str:
-        raise RuntimeError(
+        )
+    elif "503" in err_str or "UNAVAILABLE" in err_str:
+        out_err = RuntimeError(
             "The AI service is temporarily experiencing high traffic spikes. Please try again in a few moments."
-        ) from last_error
+        )
+    else:
+        out_err = RuntimeError(
+            f"Unable to generate response from model '{primary_model}' at this moment. Please try again."
+        )
 
-    raise RuntimeError(
-        f"Unable to generate response from model '{primary_model}' at this moment. Please try again."
-    ) from last_error
+    setattr(out_err, "telemetry_result", failure_telemetry)
+    raise out_err from last_error
 

@@ -293,3 +293,73 @@ def test_call_gemini_client_and_sleep_fn_injection_preserved(monkeypatch):
     assert mock_client.models.generate_content.call_count == 2
     mock_sleep.assert_called_once()
 
+
+def test_trace_captures_successful_rewrite_and_failed_generation_telemetry(monkeypatch):
+    from app.services.rag_service import _llm_trace_slot
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "test_key_rag_fail")
+    monkeypatch.setattr(settings, "GEMINI_REWRITE_MODEL", "gemini-3.5-flash-lite")
+    monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", False)
+
+    chunks = [
+        {
+            "chunk_id": "PF_p1_c0",
+            "document_name": "programming_fundamentals.pdf",
+            "page_number": 1,
+            "chunk_index": 0,
+            "text": "Closures retain access to outer lexical environment variables.",
+            "similarity": 0.88,
+        }
+    ]
+    store = _StubStore(chunks)
+    history = [
+        ChatMessage(role="user", content="What is a closure?"),
+        ChatMessage(role="assistant", content="A closure bundles a function with scope."),
+    ]
+
+    def _client_side_effect(**kwargs):
+        if kwargs["model"] == "gemini-3.5-flash-lite":
+            return SimpleNamespace(
+                text="How does a closure retain outer variables?",
+                model_version="gemini-3.5-flash-lite",
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=44,
+                    candidates_token_count=9,
+                    total_token_count=53,
+                    thoughts_token_count=None,
+                ),
+            )
+        raise TimeoutError("Read timed out during answer synthesis SECRET_PROMPT_LEAK")
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = _client_side_effect
+
+    with patch("app.services.llm_gateway.genai.Client", return_value=mock_client):
+        response, trace = answer_question_with_trace(
+            question="How does it retain outer variables?",
+            user_id="trace_user_fail",
+            vector_store=store,  # type: ignore
+            history=history,
+            model="gemini-3.8-flash",
+        )
+
+    assert response.is_error is True
+    assert trace.rewriter_telemetry is not None
+    assert trace.rewriter_telemetry.success is True
+    assert trace.rewriter_telemetry.model_used == "gemini-3.5-flash-lite"
+    assert trace.rewriter_telemetry.total_tokens == 53
+
+    assert trace.generation_telemetry is not None
+    assert trace.generation_telemetry.success is False
+    assert trace.generation_telemetry.error_category == "timeout"
+    assert trace.generation_telemetry.model_used == "gemini-3.8-flash"
+    assert trace.generation_telemetry.prompt_tokens is None
+    assert trace.generation_telemetry.output_tokens is None
+    assert trace.generation_telemetry.total_tokens is None
+    assert trace.generation_telemetry.thoughts_tokens is None
+    assert trace.generation_telemetry.latency_ms >= 0.0
+    assert trace.generation_telemetry.attempt_latency_ms is not None
+    assert len(trace.generation_telemetry.attempt_latencies_ms) == 1
+    assert "SECRET_PROMPT_LEAK" not in trace.generation_telemetry.model_dump_json()
+    assert _llm_trace_slot.get() is None
+

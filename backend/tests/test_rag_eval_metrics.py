@@ -338,3 +338,89 @@ def test_answer_metrics_refusal_clarification_and_aggregation():
     assert summary.citation_grounding_validity_rate == pytest.approx(1.0)
     assert summary.lexical_concept_coverage == pytest.approx(1.0)
 
+
+def test_rag_ans_01_expected_concepts_aligned_with_question():
+    dataset = load_rag_dataset()
+    case_map = {c.id: c for c in dataset.cases}
+    rag_ans_01 = case_map["rag_ans_01"]
+    assert rag_ans_01.expected_answer_concepts == ["O(n log n)", "O(n)"]
+
+
+def test_lexical_concept_coverage_tolerates_latex_and_whitespace_variants():
+    case = RAGEvalCase(
+        id="latex_bigo_check",
+        category="answerable_direct",
+        question="Compare merge sort and binary search complexity.",
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+        expected_chunk_ids=["dsa_algorithms_pdf_p1_c0"],
+        expected_answer_concepts=["O(n log n)", "O(n)", "O(log n)", "O(1)"],
+    )
+    retrieved = [
+        {"document_name": "dsa_algorithms.pdf", "page_number": 1, "text": "Merge sort O(n log n) and O(n)."}
+    ]
+
+    latex_resp = QueryResponse(
+        answer=(
+            "Merge sort runs in $O(n \\log n)$ time with `O( n )` space, "
+            "whereas iterative binary search takes \\(O(\\log n)\\) time and $$\\mathcal{O}(1)$$ space "
+            "[Document: dsa_algorithms.pdf, Page: 1]."
+        ),
+        citations=[],
+        insufficient_context=False,
+        retrieved_chunks_count=1,
+    )
+    metrics = evaluate_answer_case(case, latex_resp, retrieved)
+    assert metrics.lexical_concept_coverage == pytest.approx(1.0)
+
+    # Verify partial / missing concepts still reduce score accurately
+    partial_resp = QueryResponse(
+        answer="Merge sort runs in $O(n \\cdot \\log n)$ time [Document: dsa_algorithms.pdf, Page: 1].",
+        citations=[],
+        insufficient_context=False,
+        retrieved_chunks_count=1,
+    )
+    partial_metrics = evaluate_answer_case(case, partial_resp, retrieved)
+    assert partial_metrics.lexical_concept_coverage == pytest.approx(0.25)
+
+
+def test_lexical_concept_coverage_log_parens_and_empty_concepts():
+    from evals.rag_evaluator import _normalize_lexical_text
+
+    assert _normalize_lexical_text("O(n log(n))") == "o(n log n)"
+    assert _normalize_lexical_text(r"O(n \log(n) )") == "o(n log n)"
+    assert _normalize_lexical_text(r"$O(n \log n)$") == "o(n log n)"
+
+    # Only empty/whitespace concepts -> None (never counts as a trivial match)
+    empty_concepts_case = RAGEvalCase(
+        id="empty_concepts_check",
+        category="answerable_direct",
+        question="Sample question?",
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+        expected_chunk_ids=["dsa_algorithms_pdf_p1_c0"],
+        expected_answer_concepts=["", "   "],
+    )
+    retrieved = [{"document_name": "dsa_algorithms.pdf", "page_number": 1, "text": "Merge sort O(n log n)."}]
+    empty_ans = QueryResponse(answer="", citations=[], insufficient_context=False, retrieved_chunks_count=1)
+    assert evaluate_answer_case(empty_concepts_case, empty_ans, retrieved).lexical_concept_coverage is None
+
+    # Mixed blank and real concepts: blank entries are ignored in denominator and numerator
+    mixed_case = RAGEvalCase(
+        id="mixed_concepts_check",
+        category="answerable_direct",
+        question="What is merge sort time complexity?",
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+        expected_chunk_ids=["dsa_algorithms_pdf_p1_c0"],
+        expected_answer_concepts=["O(n log n)", "   ", ""],
+    )
+    log_paren_resp = QueryResponse(
+        answer=r"Merge sort takes $O(n \log(n) )$ time [Document: dsa_algorithms.pdf, Page: 1].",
+        citations=[],
+        insufficient_context=False,
+        retrieved_chunks_count=1,
+    )
+    assert evaluate_answer_case(mixed_case, log_paren_resp, retrieved).lexical_concept_coverage == pytest.approx(1.0)
+    assert evaluate_answer_case(mixed_case, empty_ans, retrieved).lexical_concept_coverage == pytest.approx(0.0)
+

@@ -12,7 +12,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
@@ -35,6 +35,8 @@ class LLMTelemetryEvent(BaseModel):
     total_tokens: Optional[int] = None
     thoughts_tokens: Optional[int] = None
     latency_ms: float = 0.0
+    attempt_latency_ms: Optional[float] = None
+    attempt_latencies_ms: Optional[List[float]] = None
     retries: int = 0
     fallback_used: bool = False
     success: bool = True

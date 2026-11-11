@@ -271,17 +271,25 @@ def call_gemini(
     Invoke Gemini API via the centralized LLM gateway (`llm_gateway.generate_text`).
     Preserves exact function signature, mock client injection, retry/backoff, and fallback behavior.
     """
-    result = generate_text(
-        prompt=prompt,
-        system_instruction=system_instruction,
-        model=model,
-        temperature=0.2,
-        feature=feature,
-        client=client,
-        max_retries=max_retries,
-        sleep_fn=sleep_fn,
-        allow_fallback=allow_fallback,
-    )
+    try:
+        result = generate_text(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            model=model,
+            temperature=0.2,
+            feature=feature,
+            client=client,
+            max_retries=max_retries,
+            sleep_fn=sleep_fn,
+            allow_fallback=allow_fallback,
+        )
+    except Exception as exc:
+        slot = _llm_trace_slot.get()
+        if slot is not None:
+            failure_result = getattr(exc, "telemetry_result", None)
+            if isinstance(failure_result, LLMGenerationResult):
+                slot["result"] = failure_result
+        raise
     slot = _llm_trace_slot.get()
     if slot is not None:
         slot["result"] = result
@@ -460,36 +468,40 @@ def answer_question_with_trace(
     llm_func = llm_callable or (lambda p: call_gemini(prompt=p, model=active_model, allow_fallback=False))
     generation_telemetry: Optional[LLMGenerationResult] = None
 
-    try:
-        with _capture_llm_telemetry() as gen_slot:
+    with _capture_llm_telemetry() as gen_slot:
+        try:
             answer_text = llm_func(prompt)
             generation_telemetry = gen_slot["result"]
-    except Exception as err:
-        logger.error("Error communicating with AI model (%s): %s", active_model, err, exc_info=True)
-        error_msg = str(err).strip()
-        if not error_msg or "Traceback" in error_msg:
-            error_msg = f"An error occurred while communicating with model '{active_model}'. Please try again."
-        # IMPORTANT: Preserve retrieved chunks and NEVER mark as insufficient context on API failure
-        citations = build_citations(retrieved_chunks)
-        response = QueryResponse(
-            answer=f"Error communicating with AI model: {error_msg}",
-            citations=citations,
-            insufficient_context=False, # Never convert API error to insufficient context!
-            retrieved_chunks_count=len(retrieved_chunks),
-            standalone_query=standalone_query,
-            is_error=True, # Explicitly flagged as provider/service error
-            model_used=active_model,
-        )
-        trace = RAGTrace(
-            standalone_query=standalone_query,
-            retrieved_chunks=list(retrieved_chunks),
-            max_similarity=max_similarity,
-            threshold_triggered=False,
-            clarification_triggered=False,
-            rewriter_telemetry=rewriter_telemetry,
-            generation_telemetry=generation_telemetry,
-        )
-        return response, trace
+        except Exception as err:
+            raw_err_tel = getattr(err, "telemetry_result", None)
+            generation_telemetry = gen_slot["result"] or (
+                raw_err_tel if isinstance(raw_err_tel, LLMGenerationResult) else None
+            )
+            logger.error("Error communicating with AI model (%s): %s", active_model, err, exc_info=True)
+            error_msg = str(err).strip()
+            if not error_msg or "Traceback" in error_msg:
+                error_msg = f"An error occurred while communicating with model '{active_model}'. Please try again."
+            # IMPORTANT: Preserve retrieved chunks and NEVER mark as insufficient context on API failure
+            citations = build_citations(retrieved_chunks)
+            response = QueryResponse(
+                answer=f"Error communicating with AI model: {error_msg}",
+                citations=citations,
+                insufficient_context=False, # Never convert API error to insufficient context!
+                retrieved_chunks_count=len(retrieved_chunks),
+                standalone_query=standalone_query,
+                is_error=True, # Explicitly flagged as provider/service error
+                model_used=active_model,
+            )
+            trace = RAGTrace(
+                standalone_query=standalone_query,
+                retrieved_chunks=list(retrieved_chunks),
+                max_similarity=max_similarity,
+                threshold_triggered=False,
+                clarification_triggered=False,
+                rewriter_telemetry=rewriter_telemetry,
+                generation_telemetry=generation_telemetry,
+            )
+            return response, trace
 
     insufficient = "cannot find sufficient evidence" in answer_text.lower()
     citations = extract_and_prioritize_citations(

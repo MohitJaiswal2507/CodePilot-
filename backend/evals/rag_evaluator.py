@@ -374,6 +374,36 @@ def extract_explicit_citation_tags(answer_text: str) -> List[Tuple[str, int]]:
     return tags
 
 
+_LATEX_WRAPPER_RE = re.compile(
+    r"\\(?:mathcal|mathrm|text|mathit|mathbf|operatorname)\{([^{}]*)\}"
+)
+
+
+def _normalize_lexical_text(text: str) -> str:
+    """
+    Normalize case, whitespace, inline code backticks, and common Big-O LaTeX
+    formatting differences so heuristic lexical concept coverage tolerates
+    notational formatting variants such as `$O(n \\log n)$` or `` `O(n log n)` ``.
+    """
+    norm = (text or "").lower()
+    norm = norm.replace("$$", " ").replace("$", " ").replace("`", " ")
+    norm = norm.replace("\\(", " ").replace("\\)", " ").replace("\\[", " ").replace("\\]", " ")
+    norm = _LATEX_WRAPPER_RE.sub(r" \1 ", norm)
+    norm = norm.replace("\\left(", "(").replace("\\right)", ")")
+    norm = norm.replace("\\left[", "[").replace("\\right]", "]")
+    norm = re.sub(r"\\(?:log|ln)(?![a-z])", lambda m: f" {m.group(0)[1:]} ", norm)
+    norm = re.sub(r"\\(?:cdot|times|ast)\b", " ", norm)
+    norm = re.sub(r"\\[,;:!]", " ", norm)
+    norm = re.sub(r"(?<=[a-z0-9])\s*\*\s*(?=[a-z0-9])", " ", norm)
+    norm = re.sub(r"\s+", " ", norm).strip()
+    norm = re.sub(r"\b(log|ln)\s*\(\s*([a-z0-9]+)\s*\)", r"\1 \2", norm)
+    norm = re.sub(r"\s+", " ", norm).strip()
+    norm = re.sub(r"\(\s+", "(", norm)
+    norm = re.sub(r"\s+\)", ")", norm)
+    norm = re.sub(r"\bo\s+\(", "o(", norm)
+    return norm
+
+
 def evaluate_answer_case(
     case: RAGEvalCase,
     response: QueryResponse,
@@ -438,9 +468,15 @@ def evaluate_answer_case(
     # 4. Heuristic lexical concept coverage (explicitly NOT semantic proof)
     lexical_concept_coverage: Optional[float] = None
     if case.expected_answer_concepts:
-        ans_low = (response.answer or "").lower()
-        hits = sum(1 for concept in case.expected_answer_concepts if concept.lower() in ans_low)
-        lexical_concept_coverage = hits / len(case.expected_answer_concepts)
+        normalized_concepts = [
+            norm_c
+            for concept in case.expected_answer_concepts
+            if (norm_c := _normalize_lexical_text(concept))
+        ]
+        if normalized_concepts:
+            ans_norm = _normalize_lexical_text(response.answer or "")
+            hits = sum(1 for norm_c in normalized_concepts if norm_c in ans_norm)
+            lexical_concept_coverage = hits / len(normalized_concepts)
 
     return AnswerCaseMetrics(
         case_id=case.id,
@@ -620,12 +656,18 @@ def aggregate_telemetry_summary(telemetries: Sequence[Optional[LLMGenerationResu
     if not valid:
         return {
             "calls_recorded": 0,
+            "successful_calls": 0,
+            "failed_calls": 0,
             "calls_with_usage": 0,
             "prompt_tokens": None,
             "output_tokens": None,
             "total_tokens": None,
             "thoughts_tokens": None,
             "mean_latency_ms": None,
+            "mean_success_latency_ms": None,
+            "mean_failure_latency_ms": None,
+            "mean_attempt_latency_ms": None,
+            "error_categories": {},
             "total_retries": 0,
             "fallback_count": 0,
             "models_used": [],
@@ -641,14 +683,28 @@ def aggregate_telemetry_summary(telemetries: Sequence[Optional[LLMGenerationResu
         if t.prompt_tokens is not None or t.output_tokens is not None or t.total_tokens is not None
     )
 
+    successful = [t for t in valid if t.success]
+    failed = [t for t in valid if not t.success]
+    error_categories: Dict[str, int] = {}
+    for t in failed:
+        cat = t.error_category or "unknown_error"
+        error_categories[cat] = error_categories.get(cat, 0) + 1
+
+    attempt_vals = [t.attempt_latency_ms for t in valid if t.attempt_latency_ms is not None]
     return {
         "calls_recorded": len(valid),
+        "successful_calls": len(successful),
+        "failed_calls": len(failed),
         "calls_with_usage": calls_with_usage,
         "prompt_tokens": _sum_optional("prompt_tokens"),
         "output_tokens": _sum_optional("output_tokens"),
         "total_tokens": _sum_optional("total_tokens"),
         "thoughts_tokens": _sum_optional("thoughts_tokens"),
         "mean_latency_ms": round(sum(t.latency_ms for t in valid) / len(valid), 2),
+        "mean_success_latency_ms": round(sum(t.latency_ms for t in successful) / len(successful), 2) if successful else None,
+        "mean_failure_latency_ms": round(sum(t.latency_ms for t in failed) / len(failed), 2) if failed else None,
+        "mean_attempt_latency_ms": round(sum(attempt_vals) / len(attempt_vals), 2) if attempt_vals else None,
+        "error_categories": error_categories,
         "total_retries": sum(t.retries for t in valid),
         "fallback_count": sum(1 for t in valid if t.fallback_used),
         "models_used": sorted({t.model_used for t in valid if t.model_used}),
@@ -658,14 +714,24 @@ def aggregate_telemetry_summary(telemetries: Sequence[Optional[LLMGenerationResu
 def _serialize_telemetry(t: Optional[LLMGenerationResult]) -> Optional[Dict[str, Any]]:
     if t is None:
         return None
+    attempt_count = (
+        len(t.attempt_latencies_ms)
+        if t.attempt_latencies_ms is not None
+        else (1 + t.retries if t.attempt_latency_ms is not None else None)
+    )
     return {
         "model_used": t.model_used,
         "model_version": t.model_version,
+        "success": t.success,
+        "error_category": t.error_category,
         "prompt_tokens": t.prompt_tokens,
         "output_tokens": t.output_tokens,
         "total_tokens": t.total_tokens,
         "thoughts_tokens": t.thoughts_tokens,
         "latency_ms": t.latency_ms,
+        "attempt_latency_ms": t.attempt_latency_ms,
+        "attempt_latencies_ms": t.attempt_latencies_ms,
+        "attempt_count": attempt_count,
         "retries": t.retries,
         "fallback_used": t.fallback_used,
     }
@@ -739,12 +805,15 @@ def _evaluate_with_judge(
             "error": None,
         }
     except Exception as exc:
+        failure_telemetry = getattr(exc, "telemetry_result", None)
         return {
             "evaluated": False,
             "faithfulness_score": None,
             "relevance_score": None,
             "reasoning": None,
-            "telemetry": None,
+            "telemetry": _serialize_telemetry(failure_telemetry)
+            if isinstance(failure_telemetry, LLMGenerationResult)
+            else None,
             "error": type(exc).__name__,
         }
 
@@ -810,6 +879,51 @@ def write_rag_eval_reports(
     return json_path, csv_path
 
 
+def select_eval_cases(
+    cases: Sequence[RAGEvalCase],
+    case_ids: Optional[Sequence[str]] = None,
+    limit: Optional[int] = None,
+) -> List[RAGEvalCase]:
+    """
+    Select evaluation cases by explicit IDs and/or prefix limit while validating inputs.
+    """
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+        raise ValueError(f"limit must be a positive integer >= 1 (got {limit!r}).")
+
+    selected = list(cases)
+
+    if case_ids is not None:
+        cleaned_ids = [str(cid).strip() for cid in case_ids if str(cid).strip()]
+        if not cleaned_ids:
+            raise ValueError("Case selection cannot be empty; provide at least one valid case ID.")
+        if len(cleaned_ids) != len(case_ids):
+            raise ValueError("Case selection contains blank case ID entries.")
+
+        seen: set[str] = set()
+        duplicates: List[str] = []
+        for cid in cleaned_ids:
+            if cid in seen and cid not in duplicates:
+                duplicates.append(cid)
+            seen.add(cid)
+        if duplicates:
+            raise ValueError(f"Duplicate case ID(s) in selection: {', '.join(duplicates)}")
+
+        by_id = {c.id: c for c in cases}
+        unknown = [cid for cid in cleaned_ids if cid not in by_id]
+        if unknown:
+            raise ValueError(f"Unknown case ID(s): {', '.join(unknown)}")
+
+        selected = [by_id[cid] for cid in cleaned_ids]
+
+    if limit is not None:
+        selected = selected[:limit]
+
+    if not selected:
+        raise ValueError("Case selection resolved to zero cases.")
+
+    return selected
+
+
 def run_rag_evaluation(
     mode: EvalMode = "offline",
     dataset_path: Optional[Path] = None,
@@ -821,6 +935,9 @@ def run_rag_evaluation(
     embedder: Optional[Any] = None,
     judge_client: Optional[Any] = None,
     write_artifacts: bool = True,
+    case_ids: Optional[Sequence[str]] = None,
+    limit: Optional[int] = None,
+    save_answers: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute the end-to-end RAG evaluation pipeline against an ephemeral ChromaDB store.
@@ -834,14 +951,18 @@ def run_rag_evaluation(
         raise ValueError("--judge is only supported with --mode live.")
     if top_k is not None and (isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1 or top_k > 20):
         raise ValueError(f"--top-k must be an integer between 1 and 20 (got {top_k!r}).")
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+        raise ValueError(f"--limit must be a positive integer >= 1 (got {limit!r}).")
     if mode == "live" and not settings.GEMINI_API_KEY.strip():
         raise ValueError("GEMINI_API_KEY is required in backend/.env for --mode live evaluation.")
 
     dataset = load_rag_dataset(dataset_path)
+    cases_to_run = select_eval_cases(dataset.cases, case_ids=case_ids, limit=limit)
     tmp_dir = tempfile.mkdtemp(prefix="codepilot_rag_eval_")
     eval_store: Optional[VectorStoreService] = None
 
     try:
+        # Always index the FULL synthetic corpus even when evaluating a subset of cases
         eval_store = _build_isolated_vector_store(dataset=dataset, persist_dir=tmp_dir, embedder=embedder)
 
         eval_cases: List[RAGEvalCase] = []
@@ -853,7 +974,7 @@ def run_rag_evaluation(
         judge_faithfulness_scores: List[float] = []
         judge_relevance_scores: List[float] = []
 
-        for raw_case in dataset.cases:
+        for raw_case in cases_to_run:
             effective_k = top_k if top_k is not None else raw_case.top_k
             case = raw_case.model_copy(update={"top_k": effective_k})
             eval_cases.append(case)
@@ -917,6 +1038,10 @@ def run_rag_evaluation(
                 "answer": asdict(ans_m),
             }
 
+            if save_answers:
+                case_entry["standalone_query"] = trace.standalone_query
+                case_entry["generated_answer"] = response.answer
+
             if mode == "live":
                 case_entry["telemetry"] = {
                     "rewriter": _serialize_telemetry(trace.rewriter_telemetry),
@@ -949,8 +1074,12 @@ def run_rag_evaluation(
                             total_tokens=t_raw.get("total_tokens"),
                             thoughts_tokens=t_raw.get("thoughts_tokens"),
                             latency_ms=t_raw.get("latency_ms", 0.0),
+                            attempt_latency_ms=t_raw.get("attempt_latency_ms"),
+                            attempt_latencies_ms=t_raw.get("attempt_latencies_ms"),
                             retries=t_raw.get("retries", 0),
                             fallback_used=t_raw.get("fallback_used", False),
+                            success=t_raw.get("success", True),
+                            error_category=t_raw.get("error_category"),
                         )
                     )
 
@@ -975,6 +1104,9 @@ def run_rag_evaluation(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "config": {
                 "top_k_override": top_k,
+                "limit": limit,
+                "selected_case_ids": [c.id for c in eval_cases],
+                "save_answers": bool(save_answers),
                 "similarity_threshold": settings.SIMILARITY_THRESHOLD,
                 "embedding_model": settings.EMBEDDING_MODEL_NAME,
             },

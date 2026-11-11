@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
-from pydantic import BaseModel
+from typing import Optional
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 # Load .env file from backend root or parent
@@ -10,6 +11,32 @@ load_dotenv(dotenv_path=env_path)
 _backend_dir = Path(__file__).resolve().parent.parent.parent
 _raw_chroma = os.getenv("CHROMA_PERSIST_DIR", "chroma_data")
 _resolved_chroma = str((_backend_dir / _raw_chroma).resolve()) if not os.path.isabs(_raw_chroma) else _raw_chroma
+
+
+def parse_positive_int_env(
+    raw_value: Optional[str],
+    default: int,
+    env_name: str,
+) -> int:
+    """
+    Parse a positive integer environment setting.
+    Missing or whitespace-only values fall back to `default`;
+    non-integer or non-positive values raise ValueError explicitly.
+    """
+    if raw_value is None or not str(raw_value).strip():
+        return default
+    cleaned = str(raw_value).strip()
+    try:
+        parsed = int(cleaned)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid integer value {raw_value!r} for {env_name}; expected a positive integer >= 1."
+        ) from exc
+    if parsed < 1:
+        raise ValueError(
+            f"Invalid value {parsed} for {env_name}; expected a positive integer >= 1."
+        )
+    return parsed
 
 class Settings(BaseModel):
     PROJECT_NAME: str = "CodePilot AI Backend"
@@ -39,6 +66,13 @@ class Settings(BaseModel):
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     GEMINI_REWRITE_MODEL: str = os.getenv("GEMINI_REWRITE_MODEL", "gemini-3.5-flash-lite")
     GEMINI_ADVANCED_MODEL: str = os.getenv("GEMINI_ADVANCED_MODEL", "gemini-2.5-pro")
+    GEMINI_REQUEST_TIMEOUT_MS: int = Field(
+        default_factory=lambda: parse_positive_int_env(
+            os.getenv("GEMINI_REQUEST_TIMEOUT_MS"),
+            120000,
+            "GEMINI_REQUEST_TIMEOUT_MS",
+        )
+    )
     MODEL_CACHE_TTL_SECONDS: int = int(os.getenv("MODEL_CACHE_TTL_SECONDS", "3600"))
     OBSERVABILITY_ENABLED: bool = os.getenv("OBSERVABILITY_ENABLED", "true").lower() in ("true", "1", "yes")
     OBSERVABILITY_LOG_PATH: str = os.getenv("OBSERVABILITY_LOG_PATH", "")
