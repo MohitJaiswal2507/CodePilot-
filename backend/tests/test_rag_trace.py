@@ -363,3 +363,145 @@ def test_trace_captures_successful_rewrite_and_failed_generation_telemetry(monke
     assert "SECRET_PROMPT_LEAK" not in trace.generation_telemetry.model_dump_json()
     assert _llm_trace_slot.get() is None
 
+
+def test_filter_settings_validation_and_disable_gap(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.delenv("SECONDARY_SIMILARITY_THRESHOLD", raising=False)
+    monkeypatch.delenv("RETRIEVAL_SCORE_GAP", raising=False)
+    defaults = Settings()
+    assert defaults.SECONDARY_SIMILARITY_THRESHOLD == pytest.approx(0.35)
+    assert defaults.RETRIEVAL_SCORE_GAP == pytest.approx(0.25)
+
+    monkeypatch.setenv("SECONDARY_SIMILARITY_THRESHOLD", "  ")
+    monkeypatch.setenv("RETRIEVAL_SCORE_GAP", "")
+    blanks = Settings()
+    assert blanks.SECONDARY_SIMILARITY_THRESHOLD == pytest.approx(0.35)
+    assert blanks.RETRIEVAL_SCORE_GAP == pytest.approx(0.25)
+
+    # RETRIEVAL_SCORE_GAP <= 0 is valid and disables gap filtering
+    monkeypatch.setenv("RETRIEVAL_SCORE_GAP", "0")
+    assert Settings().RETRIEVAL_SCORE_GAP == pytest.approx(0.0)
+    monkeypatch.setenv("RETRIEVAL_SCORE_GAP", "-0.5")
+    assert Settings().RETRIEVAL_SCORE_GAP == pytest.approx(-0.5)
+
+    # Invalid values raise explicit ValueError
+    for bad in ("abc", "-0.1", "1.5"):
+        monkeypatch.setenv("SECONDARY_SIMILARITY_THRESHOLD", bad)
+        with pytest.raises(ValueError, match="SECONDARY_SIMILARITY_THRESHOLD"):
+            Settings()
+    monkeypatch.delenv("SECONDARY_SIMILARITY_THRESHOLD", raising=False)
+
+    for bad_gap in ("xyz", "1.5"):
+        monkeypatch.setenv("RETRIEVAL_SCORE_GAP", bad_gap)
+        with pytest.raises(ValueError, match="RETRIEVAL_SCORE_GAP"):
+            Settings()
+
+
+def test_filter_context_chunks_core_and_edge_cases():
+    from app.services.rag_service import filter_context_chunks
+
+    # 1. Strong top result + weak sub-threshold and high-gap distractors
+    mixed = [
+        {"chunk_id": "c1", "document_name": "dsa.pdf", "page_number": 1, "chunk_index": 0, "text": "Merge sort O(n log n).", "similarity": 0.78},
+        {"chunk_id": "c2", "document_name": "db.pdf", "page_number": 2, "chunk_index": 1, "text": "B-Tree O(log n).", "similarity": 0.42},  # gap=0.36 > 0.25
+        {"chunk_id": "c3", "document_name": "os.pdf", "page_number": 1, "chunk_index": 0, "text": "TLB cache.", "similarity": 0.31},
+        {"chunk_id": "c4", "document_name": "net.pdf", "page_number": 1, "chunk_index": 0, "text": "TCP SYN.", "similarity": 0.24},
+    ]
+    kept = filter_context_chunks(mixed, secondary_threshold=0.35, max_score_gap=0.25)
+    assert [c["chunk_id"] for c in kept] == ["c1"]
+
+    # 2. Multiple relevant chunks with close scores (including borderline 0.47 and 0.42 multi-aspect)
+    borderline = [
+        {"chunk_id": "net_p1", "document_name": "net.pdf", "page_number": 1, "chunk_index": 0, "text": "TCP handshake.", "similarity": 0.47},
+        {"chunk_id": "net_p2", "document_name": "net.pdf", "page_number": 2, "chunk_index": 1, "text": "DNS lookup.", "similarity": 0.42},
+        {"chunk_id": "noise", "document_name": "dsa.pdf", "page_number": 3, "chunk_index": 2, "text": "Hash table.", "similarity": 0.23},
+    ]
+    kept_border = filter_context_chunks(borderline, secondary_threshold=0.35, max_score_gap=0.25)
+    assert [c["chunk_id"] for c in kept_border] == ["net_p1", "net_p2"]
+
+    # 3. Asymmetric multi-part trade-off: gap=0.25 drops 0.50 (gap=0.35), gap<=0 keeps only threshold >= 0.35
+    asymmetric = [
+        {"chunk_id": "part_a", "document_name": "os.pdf", "page_number": 1, "chunk_index": 0, "text": "Virtual memory.", "similarity": 0.85},
+        {"chunk_id": "part_b", "document_name": "os.pdf", "page_number": 2, "chunk_index": 1, "text": "Deadlock conditions.", "similarity": 0.50},
+        {"chunk_id": "weak", "document_name": "net.pdf", "page_number": 1, "chunk_index": 0, "text": "HTTP 404.", "similarity": 0.20},
+    ]
+    assert [c["chunk_id"] for c in filter_context_chunks(asymmetric, secondary_threshold=0.35, max_score_gap=0.25)] == ["part_a"]
+    assert [c["chunk_id"] for c in filter_context_chunks(asymmetric, secondary_threshold=0.35, max_score_gap=0.0)] == ["part_a", "part_b"]
+    assert [c["chunk_id"] for c in filter_context_chunks(asymmetric, secondary_threshold=0.35, max_score_gap=-1.0)] == ["part_a", "part_b"]
+
+    # 4. Empty list
+    assert filter_context_chunks([]) == []
+
+    # 5. Duplicates (by chunk_id AND by fallback metadata/text) and unsorted input + missing similarity
+    unsorted_dups = [
+        {"document_name": "a.pdf", "page_number": 1, "text": "Low noise", "similarity": 0.20},
+        {"document_name": "a.pdf", "page_number": 2, "text": "No score", "similarity": None},
+        {"chunk_id": "dup_id", "document_name": "b.pdf", "page_number": 1, "chunk_index": 0, "text": "Top A", "similarity": 0.70},
+        {"chunk_id": "dup_id", "document_name": "b.pdf", "page_number": 1, "chunk_index": 0, "text": "Top A", "similarity": 0.90},
+        {"document_name": "c.pdf", "page_number": 3, "text": "Meta dup B", "similarity": 0.80},
+        {"document_name": "c.pdf", "page_number": 3, "text": "Meta dup B", "similarity": 0.79},
+    ]
+    deduped = filter_context_chunks(unsorted_dups, secondary_threshold=0.35, max_score_gap=0.25)
+    assert len(deduped) == 2
+    assert deduped[0]["chunk_id"] == "dup_id"
+    assert deduped[0]["similarity"] == 0.90
+    assert deduped[1]["text"] == "Meta dup B"
+    assert deduped[1]["similarity"] == 0.80
+
+
+def test_trace_preserves_raw_chunks_and_filters_prompt_and_fallback_citations(tmp_path):
+    store = VectorStoreService(persist_dir=str(tmp_path / "chroma_filter_isolation"))
+    store._embedder = _DeterministicFakeEmbedder()
+
+    alice_strong = DocumentChunk(
+        id="DSA_p1_c0",
+        document_name="DSA.pdf",
+        page_number=1,
+        chunk_index=0,
+        text="Binary search requires a sorted array and runs in O(log n).",
+    )
+    alice_weak = DocumentChunk(
+        id="Noise_p4_c1",
+        document_name="Noise.pdf",
+        page_number=4,
+        chunk_index=1,
+        text="Completely unrelated cooking notes about sourdough bread.",
+    )
+    bob_chunk = DocumentChunk(
+        id="Bob_p1_c0",
+        document_name="BobSecret.pdf",
+        page_number=1,
+        chunk_index=0,
+        text="Binary search secret belonging to Bob.",
+    )
+    store.add_document_chunks([alice_strong, alice_weak], user_id="alice_filter", document_id="doc_a")
+    store.add_document_chunks([bob_chunk], user_id="bob_filter", document_id="doc_b")
+
+    seen_prompts = []
+
+    def mock_llm_no_tags(prompt: str) -> str:
+        seen_prompts.append(prompt)
+        # Intentionally omit [Document: ..., Page: ...] tags to exercise fallback citations
+        return "Binary search runs in O(log n) time on sorted arrays."
+
+    response, trace = answer_question_with_trace(
+        question="What is binary search complexity?",
+        user_id="alice_filter",
+        vector_store=store,
+        top_k=4,
+        llm_callable=mock_llm_no_tags,
+    )
+
+    assert len(seen_prompts) == 1
+    assert "Binary search requires a sorted array" in seen_prompts[0]
+    assert "sourdough bread" not in seen_prompts[0]
+    assert "BobSecret" not in seen_prompts[0]
+
+    # trace.retrieved_chunks preserves raw Chroma results; trace.context_chunks holds filtered LLM context
+    assert len(trace.retrieved_chunks) == 2
+    assert len(trace.context_chunks) == 1
+    assert trace.context_chunks[0]["document_name"] == "DSA.pdf"
+    assert response.retrieved_chunks_count == 1
+    assert [c.document_name for c in response.citations] == ["DSA.pdf"]
+

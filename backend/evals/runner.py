@@ -153,6 +153,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"Answerable Mean Top-1 Sim:        {_fmt_metric(s['answerable_mean_top1_similarity'])}")
     print(f"Unanswerable Mean Top-1 Sim:      {_fmt_metric(s['unanswerable_mean_top1_similarity'])}")
     print(f"Context Noise Rate:               {_fmt_metric(s.get('context_noise_rate'))}")
+    print(f"Context Retention Ratio:          {_fmt_metric(s.get('context_retention_ratio'))}")
+    print(f"Mean Context Chunks / Query:      {_fmt_metric(s.get('mean_context_chunks_per_answerable_query'))}")
     print(f"Refusal Accuracy:                 {_fmt_metric(s['refusal_accuracy'])}")
     print(f"False Refusal Rate:               {_fmt_metric(s['false_refusal_rate'])}")
     print(f"Clarification Accuracy:           {_fmt_metric(s['clarification_accuracy'])}")

@@ -702,3 +702,188 @@ def test_context_noise_rate_uses_actual_retrieved_similarities():
     # 3 below-threshold chunks across 6 scored answerable chunks = 0.5 (unanswerable excluded)
     assert summary.context_noise_rate == pytest.approx(0.5)
 
+
+def test_raw_retrieval_metrics_unchanged_while_filtered_context_reduces_noise_and_scopes_grounding():
+    case = RAGEvalCase(
+        id="raw_vs_ctx",
+        category="answerable_direct",
+        question="What is merge sort complexity?",
+        top_k=4,
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+        expected_chunk_ids=["dsa_algorithms_pdf_p1_c0"],
+        expected_answer_concepts=["O(n log n)"],
+    )
+    raw_chunks = [
+        {"chunk_id": "dsa_algorithms_pdf_p1_c0", "document_name": "dsa_algorithms.pdf", "page_number": 1, "text": "Merge sort O(n log n).", "similarity": 0.75},
+        {"chunk_id": "noise_1", "document_name": "db.pdf", "page_number": 2, "text": "B-Tree.", "similarity": 0.28},
+        {"chunk_id": "noise_2", "document_name": "os.pdf", "page_number": 1, "text": "TLB.", "similarity": 0.20},
+        {"chunk_id": "noise_3", "document_name": "net.pdf", "page_number": 1, "text": "SYN.", "similarity": 0.15},
+    ]
+    filtered_context = [raw_chunks[0]]
+
+    # 1. Raw retrieval metrics stay identical over 4 raw chunks while context_noise_rate evaluates filtered context
+    ret_m = evaluate_retrieval_case(case, raw_chunks, context_chunks=filtered_context, similarity_threshold=0.35)
+    assert ret_m.precision_at_k == pytest.approx(0.25)
+    assert ret_m.recall_at_k == pytest.approx(1.0)
+    assert ret_m.reciprocal_rank == pytest.approx(1.0)
+    assert ret_m.context_noise_rate == pytest.approx(0.0)
+
+    # 2. Trace constructed WITHOUT context_chunks remains backward compatible
+    legacy_trace = RAGTrace(standalone_query="What is merge sort complexity?", retrieved_chunks=raw_chunks, max_similarity=0.75)
+    assert legacy_trace.context_chunks is None
+
+    # 3. With trace.context_chunks set, citing a filtered-out raw chunk must fail citation grounding
+    traced_filtered = RAGTrace(
+        standalone_query="What is merge sort complexity?",
+        retrieved_chunks=raw_chunks,
+        context_chunks=filtered_context,
+        max_similarity=0.75,
+    )
+    citing_filtered_out = QueryResponse(
+        answer="Merge sort takes O(n log n) [Document: db.pdf, Page: 2].",
+        citations=[],
+        insufficient_context=False,
+        retrieved_chunks_count=1,
+    )
+    ans_bad_cite = evaluate_answer_case(case, citing_filtered_out, raw_chunks, trace=traced_filtered)
+    assert ans_bad_cite.hallucinated_citation_tags == 1
+    assert ans_bad_cite.citations_grounded is False
+
+
+def test_context_reduction_diagnostics_normal_and_edge_cases():
+    a1 = RAGEvalCase(
+        id="ans_1",
+        category="answerable_direct",
+        question="Q1",
+        top_k=4,
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+    )
+    a2 = RAGEvalCase(
+        id="ans_2",
+        category="conversational_followup",
+        question="Q2",
+        top_k=4,
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+    )
+    a_empty = RAGEvalCase(
+        id="ans_empty",
+        category="answerable_direct",
+        question="Q3",
+        top_k=4,
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+    )
+    u_gated = RAGEvalCase(
+        id="unans_gated",
+        category="unanswerable",
+        question="Q4",
+        top_k=4,
+        answerable=False,
+    )
+    amb_clar = RAGEvalCase(
+        id="amb_clar",
+        category="ambiguous",
+        question="Explain that",
+        top_k=4,
+        answerable=False,
+        expect_clarification=True,
+    )
+
+    raw_4 = [
+        {"chunk_id": "c1", "document_name": "dsa_algorithms.pdf", "page_number": 1, "text": "t1", "similarity": 0.72},
+        {"chunk_id": "c2", "document_name": "dsa_algorithms.pdf", "page_number": 2, "text": "t2", "similarity": 0.55},
+        {"chunk_id": "c3", "document_name": "db.pdf", "page_number": 1, "text": "t3", "similarity": 0.25},
+        {"chunk_id": "c4", "document_name": "os.pdf", "page_number": 1, "text": "t4", "similarity": 0.12},
+    ]
+
+    ret_a1 = evaluate_retrieval_case(a1, raw_4, context_chunks=raw_4[:1], similarity_threshold=0.35)
+    ret_a2 = evaluate_retrieval_case(a2, raw_4, context_chunks=raw_4[:2], similarity_threshold=0.35)
+    ret_empty = evaluate_retrieval_case(a_empty, [], context_chunks=[], similarity_threshold=0.35)
+    ret_u = evaluate_retrieval_case(u_gated, raw_4, context_chunks=[], similarity_threshold=0.35)
+    ret_amb = evaluate_retrieval_case(amb_clar, [], context_chunks=[], similarity_threshold=0.35)
+
+    assert ret_a1.filtered_chunks_count == 3
+    assert ret_a1.context_retention_ratio == pytest.approx(0.25)
+    assert ret_a2.filtered_chunks_count == 2
+    assert ret_a2.context_retention_ratio == pytest.approx(0.5)
+    assert ret_empty.filtered_chunks_count == 0
+    assert ret_empty.context_retention_ratio is None
+    assert ret_u.filtered_chunks_count == 4
+    assert ret_u.context_retention_ratio == pytest.approx(0.0)
+    assert ret_amb.filtered_chunks_count == 0
+    assert ret_amb.context_retention_ratio is None
+
+    # Safety clamp: filtered_chunks_count must never be negative even on synthetic mismatched counts
+    ret_clamped = evaluate_retrieval_case(a1, raw_4[:1], context_chunks=raw_4[:2], similarity_threshold=0.35)
+    assert ret_clamped.filtered_chunks_count == 0
+
+    ans_ok = QueryResponse(answer="Ans [Document: dsa_algorithms.pdf, Page: 1].", citations=[], retrieved_chunks_count=1)
+    ans_err = QueryResponse(answer="Error", citations=[], insufficient_context=False, is_error=True, retrieved_chunks_count=2)
+    ans_empty = QueryResponse(answer="Refused", citations=[], insufficient_context=True, retrieved_chunks_count=0)
+    ans_ref = QueryResponse(answer="Not enough context.", citations=[], insufficient_context=True, retrieved_chunks_count=0)
+    ans_clar = QueryResponse(answer="Could you clarify?", citations=[], clarification_needed=True, retrieved_chunks_count=0)
+
+    summary = aggregate_rag_eval_metrics(
+        [a1, a2, a_empty, u_gated, amb_clar],
+        [ret_a1, ret_a2, ret_empty, ret_u, ret_amb],
+        [
+            evaluate_answer_case(a1, ans_ok, raw_4),
+            evaluate_answer_case(a2, ans_err, raw_4),
+            evaluate_answer_case(a_empty, ans_empty, []),
+            evaluate_answer_case(u_gated, ans_ref, raw_4),
+            evaluate_answer_case(amb_clar, ans_clar, []),
+        ],
+    )
+    # Answerable with raw > 0: (1 + 2) / (4 + 4) = 0.375; empty answerable excluded from denominator
+    assert summary.context_retention_ratio == pytest.approx(0.375)
+    # Across all 3 answerable non-clarification cases (a1=1, a2=2, a_empty=0): mean = 1.0
+    assert summary.mean_context_chunks_per_answerable_query == pytest.approx(1.0)
+
+
+def test_context_reduction_diagnostics_zero_raw_and_no_answerable_cases():
+    a_empty = RAGEvalCase(
+        id="ans_empty_only",
+        category="answerable_direct",
+        question="Question?",
+        top_k=4,
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+    )
+    ret_empty = evaluate_retrieval_case(a_empty, [], context_chunks=[], similarity_threshold=0.35)
+    ans_empty = evaluate_answer_case(
+        a_empty,
+        QueryResponse(answer="No context", citations=[], insufficient_context=True, retrieved_chunks_count=0),
+        [],
+    )
+    zero_raw_summary = aggregate_rag_eval_metrics([a_empty], [ret_empty], [ans_empty])
+    assert zero_raw_summary.context_retention_ratio is None
+    assert zero_raw_summary.mean_context_chunks_per_answerable_query == pytest.approx(0.0)
+
+    u_only = RAGEvalCase(
+        id="unans_only",
+        category="unanswerable",
+        question="Unanswerable question?",
+        top_k=4,
+        answerable=False,
+    )
+    clar_only = RAGEvalCase(
+        id="clar_only",
+        category="ambiguous",
+        question="Explain that",
+        top_k=4,
+        answerable=False,
+        expect_clarification=True,
+    )
+    raw_unans = [{"chunk_id": "u1", "document_name": "os.pdf", "page_number": 1, "text": "x", "similarity": 0.1}]
+    ret_u = evaluate_retrieval_case(u_only, raw_unans, context_chunks=[], similarity_threshold=0.35)
+    ret_c = evaluate_retrieval_case(clar_only, [], context_chunks=[], similarity_threshold=0.35)
+    ans_u = evaluate_answer_case(u_only, QueryResponse(answer="Refused", citations=[], insufficient_context=True), raw_unans)
+    ans_c = evaluate_answer_case(clar_only, QueryResponse(answer="Clarify?", citations=[], clarification_needed=True), [])
+
+    no_ans_summary = aggregate_rag_eval_metrics([u_only, clar_only], [ret_u, ret_c], [ans_u, ans_c])
+    assert no_ans_summary.context_retention_ratio is None
+    assert no_ans_summary.mean_context_chunks_per_answerable_query is None
+

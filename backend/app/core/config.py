@@ -1,3 +1,4 @@
+import math
 import os
 from pathlib import Path
 from typing import Optional
@@ -35,6 +36,43 @@ def parse_positive_int_env(
     if parsed < 1:
         raise ValueError(
             f"Invalid value {parsed} for {env_name}; expected a positive integer >= 1."
+        )
+    return parsed
+
+
+def parse_float_env(
+    raw_value: Optional[str],
+    default: float,
+    env_name: str,
+    *,
+    min_value: Optional[float] = None,
+    max_value: Optional[float] = None,
+) -> float:
+    """
+    Parse a bounded finite float environment setting.
+    Missing or whitespace-only values fall back to `default`;
+    non-numeric, non-finite, or out-of-bounds values raise ValueError explicitly.
+    """
+    if raw_value is None or not str(raw_value).strip():
+        return default
+    cleaned = str(raw_value).strip()
+    try:
+        parsed = float(cleaned)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid float value {raw_value!r} for {env_name}; expected a numeric value."
+        ) from exc
+    if not math.isfinite(parsed):
+        raise ValueError(
+            f"Invalid non-finite float value {raw_value!r} for {env_name}."
+        )
+    if min_value is not None and parsed < min_value:
+        raise ValueError(
+            f"Invalid value {parsed} for {env_name}; expected >= {min_value}."
+        )
+    if max_value is not None and parsed > max_value:
+        raise ValueError(
+            f"Invalid value {parsed} for {env_name}; expected <= {max_value}."
         )
     return parsed
 
@@ -82,6 +120,23 @@ class Settings(BaseModel):
     DEFAULT_CHUNK_SIZE: int = int(os.getenv("DEFAULT_CHUNK_SIZE", "600"))
     DEFAULT_CHUNK_OVERLAP: int = int(os.getenv("DEFAULT_CHUNK_OVERLAP", "100"))
     SIMILARITY_THRESHOLD: float = float(os.getenv("SIMILARITY_THRESHOLD", "0.35"))
+    SECONDARY_SIMILARITY_THRESHOLD: float = Field(
+        default_factory=lambda: parse_float_env(
+            os.getenv("SECONDARY_SIMILARITY_THRESHOLD"),
+            0.35,
+            "SECONDARY_SIMILARITY_THRESHOLD",
+            min_value=0.0,
+            max_value=1.0,
+        )
+    )
+    RETRIEVAL_SCORE_GAP: float = Field(
+        default_factory=lambda: parse_float_env(
+            os.getenv("RETRIEVAL_SCORE_GAP"),
+            0.25,
+            "RETRIEVAL_SCORE_GAP",
+            max_value=1.0,
+        )
+    )
 
     # Neon Auth Configuration
     NEON_AUTH_URL: str = os.getenv("NEON_AUTH_URL", "https://ep-silent-sound-bdj25ci7.neonauth.us-east-2.aws.neon.tech/neondb/auth")

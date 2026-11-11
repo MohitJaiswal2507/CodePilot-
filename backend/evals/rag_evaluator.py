@@ -201,6 +201,10 @@ class RetrievalCaseMetrics:
     scored_retrieved_count: int = 0
     below_threshold_retrieved_count: int = 0
     context_noise_rate: Optional[float] = None
+    raw_retrieved_chunks_count: Optional[int] = None
+    context_chunks_count: Optional[int] = None
+    filtered_chunks_count: Optional[int] = None
+    context_retention_ratio: Optional[float] = None
 
 
 def _chunk_dedup_key(chunk: Dict[str, Any]) -> Tuple[Any, ...]:
@@ -237,10 +241,17 @@ def evaluate_retrieval_case(
     case: RAGEvalCase,
     retrieved_chunks: Sequence[Dict[str, Any]],
     similarity_threshold: Optional[float] = None,
+    context_chunks: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> RetrievalCaseMetrics:
     """
-    Compute Precision@K, Recall@K, Reciprocal Rank, Top-1 Similarity, and
-    threshold-based Context Noise counts for one case.
+    Compute Precision@K, Recall@K, Reciprocal Rank, and Top-1 Similarity from raw
+    `retrieved_chunks`, while computing post-filter context diagnostics from
+    `context_chunks` actually passed to the LLM (falling back to deduplicated
+    raw chunks when omitted).
+
+    Note: `context_noise_rate` measures post-filter threshold compliance (the
+    share of scored context chunks below `similarity_threshold`), not semantic
+    relevance; pair it with `context_retention_ratio` and `filtered_chunks_count`.
 
     Anti-inflation safeguards:
     - Duplicate retrieved chunks are deduplicated before counting Precision@K.
@@ -255,6 +266,10 @@ def evaluate_retrieval_case(
         top1_sim = float(top_slice[0]["similarity"])
 
     unique_retrieved = deduplicate_retrieved_chunks(top_slice)
+    raw_count = len(retrieved_chunks)
+    ctx_count = len(context_chunks) if context_chunks is not None else len(unique_retrieved)
+    filtered_count = max(0, raw_count - ctx_count)
+    retention_ratio = (ctx_count / raw_count) if raw_count > 0 else None
 
     # Non-answerable or clarification cases have no retrieval ground-truth targets
     if not case.answerable:
@@ -272,11 +287,16 @@ def evaluate_retrieval_case(
             scored_retrieved_count=0,
             below_threshold_retrieved_count=0,
             context_noise_rate=None,
+            raw_retrieved_chunks_count=raw_count,
+            context_chunks_count=ctx_count,
+            filtered_chunks_count=filtered_count,
+            context_retention_ratio=retention_ratio,
         )
 
+    noise_source = deduplicate_retrieved_chunks(list(context_chunks)) if context_chunks is not None else unique_retrieved
     scored_count = 0
     below_threshold_count = 0
-    for chunk in unique_retrieved:
+    for chunk in noise_source:
         sim = chunk.get("similarity")
         if sim is not None:
             scored_count += 1
@@ -357,6 +377,10 @@ def evaluate_retrieval_case(
         scored_retrieved_count=scored_count,
         below_threshold_retrieved_count=below_threshold_count,
         context_noise_rate=case_noise_rate,
+        raw_retrieved_chunks_count=raw_count,
+        context_chunks_count=ctx_count,
+        filtered_chunks_count=filtered_count,
+        context_retention_ratio=retention_ratio,
     )
 
 
@@ -438,9 +462,14 @@ def evaluate_answer_case(
     Evaluate deterministic refusal, clarification, citation validity/grounding,
     and lexical concept coverage for a single RAG response.
     """
-    # Index retrieved chunks by (doc_lower, page_num) -> list of stripped chunk texts
+    effective_context = (
+        trace.context_chunks
+        if (trace is not None and trace.context_chunks is not None)
+        else retrieved_chunks
+    )
+    # Index effective context chunks by (doc_lower, page_num) -> list of stripped chunk texts
     retrieved_by_page: Dict[Tuple[str, int], List[str]] = {}
-    for chunk in retrieved_chunks:
+    for chunk in effective_context:
         key = (str(chunk.get("document_name", "")).strip().lower(), int(chunk.get("page_number", 0) or 0))
         retrieved_by_page.setdefault(key, []).append(str(chunk.get("text", "")).strip())
 
@@ -566,6 +595,8 @@ class RAGEvalSummary:
     answerable_mean_top1_similarity: Optional[float]
     unanswerable_mean_top1_similarity: Optional[float]
     context_noise_rate: Optional[float]
+    context_retention_ratio: Optional[float]
+    mean_context_chunks_per_answerable_query: Optional[float]
     refusal_accuracy: Optional[float]
     false_refusal_rate: Optional[float]
     clarification_accuracy: Optional[float]
@@ -604,11 +635,30 @@ def aggregate_rag_eval_metrics(
     recall_at_k = _safe_mean([m.recall_at_k for m in ans_ret]) or 0.0
     mrr = _safe_mean([m.reciprocal_rank for m in ans_ret]) or 0.0
 
+    # Measures post-filter threshold compliance on context chunks, not semantic relevance.
     total_scored_chunks = sum(m.scored_retrieved_count for m in ans_ret)
     total_below_threshold_chunks = sum(m.below_threshold_retrieved_count for m in ans_ret)
     context_noise_rate = (
         (total_below_threshold_chunks / total_scored_chunks) if total_scored_chunks > 0 else None
     )
+
+    eligible_retention = [
+        m for m in ans_ret
+        if (m.raw_retrieved_chunks_count or 0) > 0 and m.context_chunks_count is not None
+    ]
+    total_ans_context_chunks = sum(
+        m.context_chunks_count for m in eligible_retention if m.context_chunks_count is not None
+    )
+    total_ans_raw_chunks = sum(
+        m.raw_retrieved_chunks_count for m in eligible_retention if m.raw_retrieved_chunks_count is not None
+    )
+    context_retention_ratio = (
+        (total_ans_context_chunks / total_ans_raw_chunks) if total_ans_raw_chunks > 0 else None
+    )
+    ans_context_counts = [
+        float(m.context_chunks_count) for m in ans_ret if m.context_chunks_count is not None
+    ]
+    mean_context_chunks_per_answerable_query = _safe_mean(ans_context_counts)
 
     error_count = sum(1 for a in answer_metrics if a.is_error)
     generation_eligible_count = sum(1 for a in answer_metrics if a.generation_expected)
@@ -635,6 +685,8 @@ def aggregate_rag_eval_metrics(
         answerable_mean_top1_similarity=mean_top1_similarity(ans_ret),
         unanswerable_mean_top1_similarity=mean_top1_similarity(unans_ret),
         context_noise_rate=context_noise_rate,
+        context_retention_ratio=context_retention_ratio,
+        mean_context_chunks_per_answerable_query=mean_context_chunks_per_answerable_query,
         refusal_accuracy=_safe_mean(refusal_vals),
         false_refusal_rate=_safe_mean(false_refusal_vals),
         clarification_accuracy=_safe_mean(clar_vals),
@@ -935,6 +987,8 @@ def write_rag_eval_reports(
         "answerable_mean_top1_similarity": summary["answerable_mean_top1_similarity"],
         "unanswerable_mean_top1_similarity": summary["unanswerable_mean_top1_similarity"],
         "context_noise_rate": summary.get("context_noise_rate"),
+        "context_retention_ratio": summary.get("context_retention_ratio"),
+        "mean_context_chunks_per_answerable_query": summary.get("mean_context_chunks_per_answerable_query"),
         "refusal_accuracy": summary["refusal_accuracy"],
         "false_refusal_rate": summary["false_refusal_rate"],
         "clarification_accuracy": summary["clarification_accuracy"],
@@ -1101,7 +1155,16 @@ def run_rag_evaluation(
                     model=model,
                 )
 
-            ret_m = evaluate_retrieval_case(case, trace.retrieved_chunks)
+            effective_context = (
+                trace.context_chunks
+                if trace.context_chunks is not None
+                else trace.retrieved_chunks
+            )
+            ret_m = evaluate_retrieval_case(
+                case,
+                trace.retrieved_chunks,
+                context_chunks=trace.context_chunks,
+            )
             ans_m = evaluate_answer_case(case, response, trace.retrieved_chunks, trace=trace)
 
             retrieval_results.append(ret_m)
@@ -1116,6 +1179,10 @@ def run_rag_evaluation(
                 "category": case.category,
                 "answerable": case.answerable,
                 "expect_clarification": case.expect_clarification,
+                "raw_retrieved_chunks_count": len(trace.retrieved_chunks),
+                "context_chunks_count": len(effective_context),
+                "filtered_chunks_count": ret_m.filtered_chunks_count,
+                "context_retention_ratio": ret_m.context_retention_ratio,
                 "retrieved_chunks_count": response.retrieved_chunks_count,
                 "max_similarity": trace.max_similarity,
                 "threshold_triggered": trace.threshold_triggered,
@@ -1140,7 +1207,7 @@ def run_rag_evaluation(
                 judge_res = _evaluate_with_judge(
                     case=case,
                     response=response,
-                    retrieved_chunks=trace.retrieved_chunks,
+                    retrieved_chunks=effective_context,
                     model=judge_model or model,
                     client=judge_client,
                 )
@@ -1196,6 +1263,8 @@ def run_rag_evaluation(
                 "selected_case_ids": [c.id for c in eval_cases],
                 "save_answers": bool(save_answers),
                 "similarity_threshold": settings.SIMILARITY_THRESHOLD,
+                "secondary_similarity_threshold": settings.SECONDARY_SIMILARITY_THRESHOLD,
+                "retrieval_score_gap": settings.RETRIEVAL_SCORE_GAP,
                 "embedding_model": settings.EMBEDDING_MODEL_NAME,
             },
             "summary": asdict(summary),

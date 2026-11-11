@@ -891,17 +891,29 @@ def test_live_failure_exclusion_diagnostic_metrics_and_csv_compatibility(tmp_pat
     assert s["explicit_citation_rate"] == pytest.approx(1.0)
     assert s["false_refusal_rate"] == pytest.approx(0.0)
     assert s["refusal_accuracy"] == pytest.approx(1.0)
-    # Orthogonal zero vectors give 1 relevant chunk (sim ~1.0) and 3 zero-sim chunks (sim 0.0 < 0.35) => 0.75 noise
-    assert s["context_noise_rate"] == pytest.approx(0.75)
+    # Filtered context drops the 3 zero-similarity chunks (< 0.35), leaving 0.0 noise in LLM context
+    assert s["context_noise_rate"] == pytest.approx(0.0)
+    assert s["context_retention_ratio"] == pytest.approx(0.25)
+    assert s["mean_context_chunks_per_answerable_query"] == pytest.approx(1.0)
 
-    # Verify failed case still keeps retrieval metrics and failure telemetry
+    # Verify failed case still keeps raw retrieval metrics, filtered context count, and failure telemetry
     conv_case = next(c for c in report["cases"] if c["case_id"] == "rag_conv_01")
+    assert conv_case["raw_retrieved_chunks_count"] == 4
+    assert conv_case["context_chunks_count"] == 1
+    assert conv_case["filtered_chunks_count"] == 3
+    assert conv_case["context_retention_ratio"] == pytest.approx(0.25)
     assert conv_case["is_error"] is True
     assert conv_case["retrieval"]["recall_at_k"] == pytest.approx(1.0)
     assert conv_case["answer"]["lexical_concept_coverage"] is None
     assert conv_case["answer"]["citations_grounded"] is None
     assert conv_case["telemetry"]["generation"]["success"] is False
     assert conv_case["telemetry"]["generation"]["error_category"] == "timeout"
+
+    unans_case = next(c for c in report["cases"] if c["case_id"] == "rag_unans_01")
+    assert unans_case["raw_retrieved_chunks_count"] == 4
+    assert unans_case["context_chunks_count"] == 0
+    assert unans_case["filtered_chunks_count"] == 4
+    assert unans_case["context_retention_ratio"] == pytest.approx(0.0)
 
     # Fresh CSV includes new columns cleanly
     with (fresh_dir / "rag_eval_summary.csv").open("r", encoding="utf-8") as fh:
@@ -910,7 +922,9 @@ def test_live_failure_exclusion_diagnostic_metrics_and_csv_compatibility(tmp_pat
     assert rows[0]["error_count"] == "1"
     assert float(rows[0]["error_rate"]) == pytest.approx(0.5)
     assert float(rows[0]["explicit_citation_rate"]) == pytest.approx(1.0)
-    assert float(rows[0]["context_noise_rate"]) == pytest.approx(0.75)
+    assert float(rows[0]["context_noise_rate"]) == pytest.approx(0.0)
+    assert float(rows[0]["context_retention_ratio"]) == pytest.approx(0.25)
+    assert float(rows[0]["mean_context_chunks_per_answerable_query"]) == pytest.approx(1.0)
 
     # Appending to a legacy 21-column CSV preserves column alignment safely
     legacy_dir = tmp_path / "legacy_csv"
@@ -935,4 +949,45 @@ def test_live_failure_exclusion_diagnostic_metrics_and_csv_compatibility(tmp_pat
         legacy_rows = list(csv.DictReader(fh))
     assert len(legacy_rows) == 2
     assert None not in legacy_rows[1]  # No extra unaligned fields appended!
+
+
+def test_offline_runner_preserves_raw_metrics_while_reporting_smaller_filtered_context(tmp_path):
+    class _OrthogonalEmbedder(_DeterministicKeywordEmbedder):
+        def encode(self, texts, show_progress_bar=False):
+            class _Arr:
+                def __init__(self, rows):
+                    self._rows = rows
+
+                def tolist(self):
+                    return self._rows
+
+            rows = [
+                [1.0 if any(kw in text.lower() for kw in kws) else 0.0 for kws in self.KEYWORDS]
+                for text in texts
+            ]
+            return _Arr(rows)
+
+    report = rag_evaluator.run_rag_evaluation(
+        mode="offline",
+        case_ids=["rag_ans_01", "rag_conv_01"],
+        output_dir=tmp_path,
+        embedder=_OrthogonalEmbedder(),
+    )
+
+    assert report["summary"]["precision_at_k"] == pytest.approx(0.25)
+    assert report["summary"]["recall_at_k"] == pytest.approx(1.0)
+    assert report["summary"]["mrr"] == pytest.approx(1.0)
+    assert report["summary"]["context_noise_rate"] == pytest.approx(0.0)
+    assert report["summary"]["context_retention_ratio"] == pytest.approx(0.25)
+    assert report["summary"]["mean_context_chunks_per_answerable_query"] == pytest.approx(1.0)
+
+    for cid in ("rag_ans_01", "rag_conv_01"):
+        entry = next(c for c in report["cases"] if c["case_id"] == cid)
+        assert entry["raw_retrieved_chunks_count"] == 4
+        assert entry["context_chunks_count"] == 1
+        assert entry["filtered_chunks_count"] == 3
+        assert entry["context_retention_ratio"] == pytest.approx(0.25)
+        assert entry["retrieved_chunks_count"] == 1
+    assert report["config"]["secondary_similarity_threshold"] == pytest.approx(0.35)
+    assert report["config"]["retrieval_score_gap"] == pytest.approx(0.25)
 
