@@ -424,3 +424,281 @@ def test_lexical_concept_coverage_log_parens_and_empty_concepts():
     assert evaluate_answer_case(mixed_case, log_paren_resp, retrieved).lexical_concept_coverage == pytest.approx(1.0)
     assert evaluate_answer_case(mixed_case, empty_ans, retrieved).lexical_concept_coverage == pytest.approx(0.0)
 
+
+def test_failed_generation_excluded_from_quality_denominators_and_not_counted_as_refusal():
+    ans_ok = RAGEvalCase(
+        id="c_ok",
+        category="answerable_direct",
+        question="What is merge sort complexity?",
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+        expected_chunk_ids=["dsa_algorithms_pdf_p1_c0"],
+        expected_answer_concepts=["O(n log n)", "O(n)"],
+    )
+    ans_err = RAGEvalCase(
+        id="c_err",
+        category="conversational_followup",
+        question="How do closures work?",
+        answerable=True,
+        expected_documents=["programming_fundamentals.pdf"],
+        expected_chunk_ids=["programming_fundamentals_pdf_p1_c0"],
+        expected_answer_concepts=["lexical environment"],
+    )
+    unans_ok = RAGEvalCase(
+        id="c_unans_ok",
+        category="unanswerable",
+        question="Explain Kubernetes HPA?",
+        answerable=False,
+    )
+    unans_err = RAGEvalCase(
+        id="c_unans_err",
+        category="unanswerable",
+        question="Explain etcd Raft?",
+        answerable=False,
+    )
+
+    chunks_ok = [{"chunk_id": "dsa_algorithms_pdf_p1_c0", "document_name": "dsa_algorithms.pdf", "page_number": 1, "text": "O(n log n) O(n)", "similarity": 0.85}]
+    chunks_err = [{"chunk_id": "programming_fundamentals_pdf_p1_c0", "document_name": "programming_fundamentals.pdf", "page_number": 1, "text": "lexical environment", "similarity": 0.78}]
+    chunks_unans = [{"chunk_id": "dsa_algorithms_pdf_p1_c0", "document_name": "dsa_algorithms.pdf", "page_number": 1, "text": "O(n log n)", "similarity": 0.12}]
+
+    r_ok = evaluate_retrieval_case(ans_ok, chunks_ok)
+    r_err = evaluate_retrieval_case(ans_err, chunks_err)
+    r_u_ok = evaluate_retrieval_case(unans_ok, chunks_unans)
+    r_u_err = evaluate_retrieval_case(unans_err, [{"chunk_id": "dsa_algorithms_pdf_p1_c0", "document_name": "dsa_algorithms.pdf", "page_number": 1, "text": "O(n log n)", "similarity": 0.40}])
+
+    a_ok = evaluate_answer_case(
+        ans_ok,
+        QueryResponse(
+            answer="O(n log n) and O(n) [Document: dsa_algorithms.pdf, Page: 1].",
+            citations=[Citation(document_name="dsa_algorithms.pdf", page_number=1, snippet="O(n log n)")],
+            insufficient_context=False,
+            retrieved_chunks_count=1,
+        ),
+        chunks_ok,
+        trace=RAGTrace(standalone_query="q1", retrieved_chunks=chunks_ok, max_similarity=0.85),
+    )
+    # Even if error response attaches fallback citations and zero matching concepts, it must be excluded
+    a_err = evaluate_answer_case(
+        ans_err,
+        QueryResponse(
+            answer="Error communicating with AI model: timed out.",
+            citations=[Citation(document_name="programming_fundamentals.pdf", page_number=1, snippet="lexical environment")],
+            insufficient_context=False,
+            retrieved_chunks_count=1,
+            is_error=True,
+        ),
+        chunks_err,
+        trace=RAGTrace(standalone_query="q2", retrieved_chunks=chunks_err, max_similarity=0.78),
+    )
+    a_u_ok = evaluate_answer_case(
+        unans_ok,
+        QueryResponse(
+            answer="I cannot find sufficient evidence.",
+            citations=[],
+            insufficient_context=True,
+            retrieved_chunks_count=1,
+        ),
+        chunks_unans,
+        trace=RAGTrace(standalone_query="u1", retrieved_chunks=chunks_unans, max_similarity=0.12, threshold_triggered=True),
+    )
+    a_u_err = evaluate_answer_case(
+        unans_err,
+        QueryResponse(
+            answer="Error communicating with AI model: timed out.",
+            citations=[],
+            insufficient_context=True,  # even if flagged insufficient, is_error=True cannot count as refusal pass!
+            retrieved_chunks_count=1,
+            is_error=True,
+        ),
+        chunks_unans,
+        trace=RAGTrace(standalone_query="u2", retrieved_chunks=chunks_unans, max_similarity=0.40, threshold_triggered=False),
+    )
+
+    assert a_err.lexical_concept_coverage is None
+    assert a_err.citations_grounded is None
+    assert a_err.false_refusal is None
+    assert a_u_err.correct_refusal is None
+    assert r_err.recall_at_k == pytest.approx(1.0)
+    assert r_err.reciprocal_rank == pytest.approx(1.0)
+
+    summary = aggregate_rag_eval_metrics(
+        [ans_ok, ans_err, unans_ok, unans_err],
+        [r_ok, r_err, r_u_ok, r_u_err],
+        [a_ok, a_err, a_u_ok, a_u_err],
+    )
+    assert summary.error_count == 2
+    # Generation expected on c_ok, c_err, c_unans_err (c_unans_ok triggered threshold gate)
+    assert summary.error_rate == pytest.approx(2 / 3)
+    assert summary.lexical_concept_coverage == pytest.approx(1.0)
+    assert summary.citation_grounding_validity_rate == pytest.approx(1.0)
+    assert summary.citation_presence_rate == pytest.approx(1.0)
+    assert summary.explicit_citation_rate == pytest.approx(1.0)
+    assert summary.false_refusal_rate == pytest.approx(0.0)
+    assert summary.refusal_accuracy == pytest.approx(1.0)
+    assert summary.recall_at_k == pytest.approx(1.0)
+
+
+def test_failed_only_and_empty_denominators_return_none_safely():
+    ans_case = RAGEvalCase(
+        id="only_fail",
+        category="answerable_direct",
+        question="What is merge sort complexity?",
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+        expected_chunk_ids=["dsa_algorithms_pdf_p1_c0"],
+        expected_answer_concepts=["O(n log n)"],
+    )
+    chunks = [{"chunk_id": "dsa_algorithms_pdf_p1_c0", "document_name": "dsa_algorithms.pdf", "page_number": 1, "text": "O(n log n)", "similarity": 0.72}]
+    ret = evaluate_retrieval_case(ans_case, chunks)
+    ans = evaluate_answer_case(
+        ans_case,
+        QueryResponse(answer="Error communicating with AI model: timeout.", citations=[], is_error=True, retrieved_chunks_count=1),
+        chunks,
+        trace=RAGTrace(standalone_query="What is merge sort complexity?", retrieved_chunks=chunks, max_similarity=0.72),
+    )
+    failed_summary = aggregate_rag_eval_metrics([ans_case], [ret], [ans])
+    assert failed_summary.error_count == 1
+    assert failed_summary.error_rate == pytest.approx(1.0)
+    assert failed_summary.recall_at_k == pytest.approx(1.0)
+    assert failed_summary.mrr == pytest.approx(1.0)
+    assert ret.reciprocal_rank == pytest.approx(1.0)
+    assert failed_summary.lexical_concept_coverage is None
+    assert failed_summary.citation_presence_rate is None
+    assert failed_summary.explicit_citation_rate is None
+    assert failed_summary.citation_grounding_validity_rate is None
+    assert failed_summary.false_refusal_rate is None
+    assert failed_summary.refusal_accuracy is None
+    assert failed_summary.clarification_accuracy is None
+
+    # Empty dataset & empty retrieval safely yield None on ratio denominators without ZeroDivisionError
+    empty_summary = aggregate_rag_eval_metrics([], [], [])
+    assert empty_summary.total_cases == 0
+    assert empty_summary.error_count == 0
+    assert empty_summary.error_rate is None
+    assert empty_summary.context_noise_rate is None
+    assert empty_summary.explicit_citation_rate is None
+    assert empty_summary.citation_grounding_validity_rate is None
+
+    empty_ret = evaluate_retrieval_case(ans_case, [])
+    assert empty_ret.context_noise_rate is None
+    assert aggregate_rag_eval_metrics([ans_case], [empty_ret], [ans]).context_noise_rate is None
+
+
+def test_explicit_vs_fallback_citation_classification():
+    c1 = RAGEvalCase(
+        id="c_explicit",
+        category="answerable_direct",
+        question="Q1",
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+        expected_chunk_ids=["dsa_algorithms_pdf_p1_c0"],
+    )
+    c2 = RAGEvalCase(
+        id="c_fallback",
+        category="answerable_direct",
+        question="Q2",
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+        expected_chunk_ids=["dsa_algorithms_pdf_p2_c1"],
+    )
+    chunks1 = [{"chunk_id": "dsa_algorithms_pdf_p1_c0", "document_name": "dsa_algorithms.pdf", "page_number": 1, "text": "Merge sort O(n log n).", "similarity": 0.80}]
+    chunks2 = [{"chunk_id": "dsa_algorithms_pdf_p2_c1", "document_name": "dsa_algorithms.pdf", "page_number": 2, "text": "Binary search O(log n).", "similarity": 0.78}]
+
+    a_explicit = evaluate_answer_case(
+        c1,
+        QueryResponse(
+            answer="Merge sort runs in O(n log n) [Document: dsa_algorithms.pdf, Page: 1].",
+            citations=[Citation(document_name="dsa_algorithms.pdf", page_number=1, snippet="Merge sort O(n log n).")],
+            insufficient_context=False,
+            retrieved_chunks_count=1,
+        ),
+        chunks1,
+    )
+    a_fallback = evaluate_answer_case(
+        c2,
+        QueryResponse(
+            answer="Binary search runs in O(log n) time.",
+            citations=[Citation(document_name="dsa_algorithms.pdf", page_number=2, snippet="Binary search O(log n).")],
+            insufficient_context=False,
+            retrieved_chunks_count=1,
+        ),
+        chunks2,
+    )
+
+    assert a_explicit.citation_present is True
+    assert a_explicit.explicit_citation is True
+    assert a_fallback.citation_present is True
+    assert a_fallback.explicit_citation is False
+
+    summary = aggregate_rag_eval_metrics(
+        [c1, c2],
+        [evaluate_retrieval_case(c1, chunks1), evaluate_retrieval_case(c2, chunks2)],
+        [a_explicit, a_fallback],
+    )
+    assert summary.citation_presence_rate == pytest.approx(1.0)
+    assert summary.explicit_citation_rate == pytest.approx(0.5)
+
+
+def test_context_noise_rate_uses_actual_retrieved_similarities():
+    c1 = RAGEvalCase(
+        id="noise_1",
+        category="answerable_direct",
+        question="Q1",
+        top_k=4,
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+        expected_chunk_ids=["c1"],
+    )
+    c2 = RAGEvalCase(
+        id="noise_2",
+        category="answerable_direct",
+        question="Q2",
+        top_k=4,
+        answerable=True,
+        expected_documents=["dsa_algorithms.pdf"],
+        expected_chunk_ids=["c5"],
+    )
+    u1 = RAGEvalCase(
+        id="unans_ignored",
+        category="unanswerable",
+        question="Q3",
+        top_k=4,
+        answerable=False,
+    )
+
+    ret1 = evaluate_retrieval_case(
+        c1,
+        [
+            {"chunk_id": "c1", "document_name": "dsa_algorithms.pdf", "page_number": 1, "text": "a", "similarity": 0.72},
+            {"chunk_id": "c2", "document_name": "dsa_algorithms.pdf", "page_number": 2, "text": "b", "similarity": 0.28},
+            {"chunk_id": "c3", "document_name": "db.pdf", "page_number": 1, "text": "c", "similarity": 0.21},
+            {"chunk_id": "c4", "document_name": "os.pdf", "page_number": 1, "text": "d", "similarity": 0.15},
+        ],
+        similarity_threshold=0.35,
+    )
+    ret2 = evaluate_retrieval_case(
+        c2,
+        [
+            {"chunk_id": "c5", "document_name": "dsa_algorithms.pdf", "page_number": 3, "text": "e", "similarity": 0.65},
+            {"chunk_id": "c6", "document_name": "db.pdf", "page_number": 2, "text": "f", "similarity": 0.40},
+        ],
+        similarity_threshold=0.35,
+    )
+    ret_u = evaluate_retrieval_case(
+        u1,
+        [{"chunk_id": "c7", "document_name": "os.pdf", "page_number": 2, "text": "g", "similarity": 0.11}],
+        similarity_threshold=0.35,
+    )
+
+    assert ret1.context_noise_rate == pytest.approx(0.75)
+    assert ret2.context_noise_rate == pytest.approx(0.0)
+    assert ret_u.context_noise_rate is None
+
+    dummy_ans_1 = evaluate_answer_case(c1, QueryResponse(answer="Ok", citations=[], retrieved_chunks_count=4), [])
+    dummy_ans_2 = evaluate_answer_case(c2, QueryResponse(answer="Ok", citations=[], retrieved_chunks_count=2), [])
+    dummy_ans_u = evaluate_answer_case(u1, QueryResponse(answer="Refused", citations=[], insufficient_context=True), [])
+
+    summary = aggregate_rag_eval_metrics([c1, c2, u1], [ret1, ret2, ret_u], [dummy_ans_1, dummy_ans_2, dummy_ans_u])
+    # 3 below-threshold chunks across 6 scored answerable chunks = 0.5 (unanswerable excluded)
+    assert summary.context_noise_rate == pytest.approx(0.5)
+

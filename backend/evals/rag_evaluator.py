@@ -198,6 +198,9 @@ class RetrievalCaseMetrics:
     recall_at_k: float
     reciprocal_rank: float
     top1_similarity: Optional[float]
+    scored_retrieved_count: int = 0
+    below_threshold_retrieved_count: int = 0
+    context_noise_rate: Optional[float] = None
 
 
 def _chunk_dedup_key(chunk: Dict[str, Any]) -> Tuple[Any, ...]:
@@ -233,15 +236,18 @@ def _chunk_matches_evidence(chunk: Dict[str, Any], evidence_substrings: Sequence
 def evaluate_retrieval_case(
     case: RAGEvalCase,
     retrieved_chunks: Sequence[Dict[str, Any]],
+    similarity_threshold: Optional[float] = None,
 ) -> RetrievalCaseMetrics:
     """
-    Compute Precision@K, Recall@K, Reciprocal Rank, and Top-1 Similarity for one case.
+    Compute Precision@K, Recall@K, Reciprocal Rank, Top-1 Similarity, and
+    threshold-based Context Noise counts for one case.
 
     Anti-inflation safeguards:
     - Duplicate retrieved chunks are deduplicated before counting Precision@K.
     - Each distinct ground-truth target is counted at most once for Recall@K.
     - A single chunk cannot match multiple independent ground-truth targets to inflate Recall@K.
     """
+    threshold = settings.SIMILARITY_THRESHOLD if similarity_threshold is None else float(similarity_threshold)
     k = max(1, case.top_k)
     top_slice = list(retrieved_chunks[:k])
     top1_sim: Optional[float] = None
@@ -263,7 +269,20 @@ def evaluate_retrieval_case(
             recall_at_k=0.0,
             reciprocal_rank=0.0,
             top1_similarity=top1_sim,
+            scored_retrieved_count=0,
+            below_threshold_retrieved_count=0,
+            context_noise_rate=None,
         )
+
+    scored_count = 0
+    below_threshold_count = 0
+    for chunk in unique_retrieved:
+        sim = chunk.get("similarity")
+        if sim is not None:
+            scored_count += 1
+            if float(sim) < threshold:
+                below_threshold_count += 1
+    case_noise_rate = (below_threshold_count / scored_count) if scored_count > 0 else None
 
     # Determine canonical target set (preferring chunk IDs, then pages, then documents)
     if case.expected_chunk_ids:
@@ -335,6 +354,9 @@ def evaluate_retrieval_case(
         recall_at_k=recall_at_k,
         reciprocal_rank=reciprocal_rank,
         top1_similarity=top1_sim,
+        scored_retrieved_count=scored_count,
+        below_threshold_retrieved_count=below_threshold_count,
+        context_noise_rate=case_noise_rate,
     )
 
 
@@ -358,9 +380,11 @@ class AnswerCaseMetrics:
     false_refusal: Optional[bool]
     clarification_matched: Optional[bool]
     citation_present: Optional[bool]
-    citations_grounded: bool
+    citations_grounded: Optional[bool]
     hallucinated_citation_tags: int
     lexical_concept_coverage: Optional[float]
+    explicit_citation: Optional[bool] = None
+    generation_expected: bool = False
 
 
 def extract_explicit_citation_tags(answer_text: str) -> List[Tuple[str, int]]:
@@ -420,54 +444,85 @@ def evaluate_answer_case(
         key = (str(chunk.get("document_name", "")).strip().lower(), int(chunk.get("page_number", 0) or 0))
         retrieved_by_page.setdefault(key, []).append(str(chunk.get("text", "")).strip())
 
-    # 1. Refusal & clarification classification
+    is_err = bool(response.is_error)
+
+    # Determine whether LLM answer generation was expected/attempted for this case
+    if is_err:
+        generation_expected = True
+    elif trace is not None:
+        generation_expected = bool(
+            not trace.clarification_triggered
+            and not trace.threshold_triggered
+            and len(trace.retrieved_chunks) > 0
+        )
+    else:
+        if case.expect_clarification:
+            clar_only = bool(
+                (response.standalone_query and response.standalone_query.startswith("CLARIFY:"))
+                or (not response.insufficient_context and len(response.citations) == 0)
+            )
+            generation_expected = not clar_only
+        elif (not case.answerable or not retrieved_chunks) and response.insufficient_context:
+            generation_expected = False
+        else:
+            generation_expected = True
+
+    # 1. Refusal & clarification classification (failed LLM calls are never scored as refusals/successes)
     correct_refusal: Optional[bool] = None
     false_refusal: Optional[bool] = None
     clarification_matched: Optional[bool] = None
 
-    if case.expect_clarification:
-        clar_flag = trace.clarification_triggered if trace is not None else (
-            bool(response.standalone_query and response.standalone_query.startswith("CLARIFY:"))
-        )
-        clarification_matched = bool(
-            clar_flag and not response.insufficient_context and len(response.citations) == 0 and not response.is_error
-        )
-    elif case.answerable:
-        false_refusal = bool(response.insufficient_context)
-    else:
-        correct_refusal = bool(
-            response.insufficient_context and len(response.citations) == 0 and not response.is_error
-        )
+    if not is_err:
+        if case.expect_clarification:
+            clar_flag = trace.clarification_triggered if trace is not None else (
+                bool(response.standalone_query and response.standalone_query.startswith("CLARIFY:"))
+            )
+            clarification_matched = bool(
+                clar_flag and not response.insufficient_context and len(response.citations) == 0
+            )
+        elif case.answerable:
+            false_refusal = bool(response.insufficient_context)
+        else:
+            correct_refusal = bool(
+                response.insufficient_context and len(response.citations) == 0
+            )
 
-    # 2. Citation presence (applicable on non-refused, non-clarification answerable cases)
+    # 2. Citation presence & explicit tag classification (eligible successful answerable generations only)
     citation_present: Optional[bool] = None
-    if case.answerable and not case.expect_clarification and not response.is_error:
-        citation_present = bool(not response.insufficient_context and len(response.citations) >= 1)
-
-    # 3. Citation grounding validity (zero fabricated tags, zero ungrounded Citation objects)
+    explicit_citation: Optional[bool] = None
     explicit_tags = extract_explicit_citation_tags(response.answer)
-    hallucinated_tags = sum(1 for tag in explicit_tags if tag not in retrieved_by_page)
 
-    returned_citations_valid = True
-    if response.insufficient_context and len(response.citations) > 0:
-        returned_citations_valid = False
-    else:
-        for cit in response.citations:
-            key = (cit.document_name.strip().lower(), int(cit.page_number))
-            texts_on_page = retrieved_by_page.get(key)
-            if not texts_on_page:
-                returned_citations_valid = False
-                break
-            clean_snippet = cit.snippet[:-3].strip() if cit.snippet.endswith("...") else cit.snippet.strip()
-            if clean_snippet and not any(clean_snippet in full_txt for full_txt in texts_on_page):
-                returned_citations_valid = False
-                break
+    if case.answerable and not case.expect_clarification and not is_err:
+        citation_present = bool(not response.insufficient_context and len(response.citations) >= 1)
+        if not response.insufficient_context:
+            explicit_citation = len(explicit_tags) >= 1
 
-    citations_grounded = (hallucinated_tags == 0) and returned_citations_valid
+    # 3. Citation grounding validity (excluded when failed generation occurs)
+    citations_grounded: Optional[bool] = None
+    hallucinated_tags = 0
+    if not is_err:
+        hallucinated_tags = sum(1 for tag in explicit_tags if tag not in retrieved_by_page)
 
-    # 4. Heuristic lexical concept coverage (explicitly NOT semantic proof)
+        returned_citations_valid = True
+        if response.insufficient_context and len(response.citations) > 0:
+            returned_citations_valid = False
+        else:
+            for cit in response.citations:
+                key = (cit.document_name.strip().lower(), int(cit.page_number))
+                texts_on_page = retrieved_by_page.get(key)
+                if not texts_on_page:
+                    returned_citations_valid = False
+                    break
+                clean_snippet = cit.snippet[:-3].strip() if cit.snippet.endswith("...") else cit.snippet.strip()
+                if clean_snippet and not any(clean_snippet in full_txt for full_txt in texts_on_page):
+                    returned_citations_valid = False
+                    break
+
+        citations_grounded = (hallucinated_tags == 0) and returned_citations_valid
+
+    # 4. Heuristic lexical concept coverage (excluded on failed generations; NOT semantic proof)
     lexical_concept_coverage: Optional[float] = None
-    if case.expected_answer_concepts:
+    if not is_err and case.expected_answer_concepts:
         normalized_concepts = [
             norm_c
             for concept in case.expected_answer_concepts
@@ -480,7 +535,7 @@ def evaluate_answer_case(
 
     return AnswerCaseMetrics(
         case_id=case.id,
-        is_error=bool(response.is_error),
+        is_error=is_err,
         correct_refusal=correct_refusal,
         false_refusal=false_refusal,
         clarification_matched=clarification_matched,
@@ -488,6 +543,8 @@ def evaluate_answer_case(
         citations_grounded=citations_grounded,
         hallucinated_citation_tags=hallucinated_tags,
         lexical_concept_coverage=lexical_concept_coverage,
+        explicit_citation=explicit_citation,
+        generation_expected=generation_expected,
     )
 
 
@@ -501,16 +558,20 @@ class RAGEvalSummary:
     answerable_count: int
     unanswerable_count: int
     ambiguous_count: int
+    error_count: int
+    error_rate: Optional[float]
     precision_at_k: float
     recall_at_k: float
     mrr: float
     answerable_mean_top1_similarity: Optional[float]
     unanswerable_mean_top1_similarity: Optional[float]
+    context_noise_rate: Optional[float]
     refusal_accuracy: Optional[float]
     false_refusal_rate: Optional[float]
     clarification_accuracy: Optional[float]
     citation_presence_rate: Optional[float]
-    citation_grounding_validity_rate: float
+    explicit_citation_rate: Optional[float]
+    citation_grounding_validity_rate: Optional[float]
     lexical_concept_coverage: Optional[float]
 
 
@@ -543,11 +604,22 @@ def aggregate_rag_eval_metrics(
     recall_at_k = _safe_mean([m.recall_at_k for m in ans_ret]) or 0.0
     mrr = _safe_mean([m.reciprocal_rank for m in ans_ret]) or 0.0
 
+    total_scored_chunks = sum(m.scored_retrieved_count for m in ans_ret)
+    total_below_threshold_chunks = sum(m.below_threshold_retrieved_count for m in ans_ret)
+    context_noise_rate = (
+        (total_below_threshold_chunks / total_scored_chunks) if total_scored_chunks > 0 else None
+    )
+
+    error_count = sum(1 for a in answer_metrics if a.is_error)
+    generation_eligible_count = sum(1 for a in answer_metrics if a.generation_expected)
+    error_rate = (error_count / generation_eligible_count) if generation_eligible_count > 0 else None
+
     refusal_vals = [1.0 if a.correct_refusal else 0.0 for a in answer_metrics if a.correct_refusal is not None]
     false_refusal_vals = [1.0 if a.false_refusal else 0.0 for a in answer_metrics if a.false_refusal is not None]
     clar_vals = [1.0 if a.clarification_matched else 0.0 for a in answer_metrics if a.clarification_matched is not None]
     cit_pres_vals = [1.0 if a.citation_present else 0.0 for a in answer_metrics if a.citation_present is not None]
-    grounding_vals = [1.0 if a.citations_grounded else 0.0 for a in answer_metrics]
+    explicit_cit_vals = [1.0 if a.explicit_citation else 0.0 for a in answer_metrics if a.explicit_citation is not None]
+    grounding_vals = [1.0 if a.citations_grounded else 0.0 for a in answer_metrics if a.citations_grounded is not None]
     concept_vals = [a.lexical_concept_coverage for a in answer_metrics if a.lexical_concept_coverage is not None]
 
     return RAGEvalSummary(
@@ -555,16 +627,20 @@ def aggregate_rag_eval_metrics(
         answerable_count=len(ans_ret),
         unanswerable_count=len(unans_ret),
         ambiguous_count=ambiguous_count,
+        error_count=error_count,
+        error_rate=error_rate,
         precision_at_k=precision_at_k,
         recall_at_k=recall_at_k,
         mrr=mrr,
         answerable_mean_top1_similarity=mean_top1_similarity(ans_ret),
         unanswerable_mean_top1_similarity=mean_top1_similarity(unans_ret),
+        context_noise_rate=context_noise_rate,
         refusal_accuracy=_safe_mean(refusal_vals),
         false_refusal_rate=_safe_mean(false_refusal_vals),
         clarification_accuracy=_safe_mean(clar_vals),
         citation_presence_rate=_safe_mean(cit_pres_vals),
-        citation_grounding_validity_rate=_safe_mean(grounding_vals) or 0.0,
+        explicit_citation_rate=_safe_mean(explicit_cit_vals),
+        citation_grounding_validity_rate=_safe_mean(grounding_vals),
         lexical_concept_coverage=_safe_mean(concept_vals),
     )
 
@@ -851,15 +927,19 @@ def write_rag_eval_reports(
         "mode": mode,
         "judge_enabled": report["judge_enabled"],
         "total_cases": summary["total_cases"],
+        "error_count": summary.get("error_count", 0),
+        "error_rate": summary.get("error_rate"),
         "precision_at_k": summary["precision_at_k"],
         "recall_at_k": summary["recall_at_k"],
         "mrr": summary["mrr"],
         "answerable_mean_top1_similarity": summary["answerable_mean_top1_similarity"],
         "unanswerable_mean_top1_similarity": summary["unanswerable_mean_top1_similarity"],
+        "context_noise_rate": summary.get("context_noise_rate"),
         "refusal_accuracy": summary["refusal_accuracy"],
         "false_refusal_rate": summary["false_refusal_rate"],
         "clarification_accuracy": summary["clarification_accuracy"],
         "citation_presence_rate": summary["citation_presence_rate"],
+        "explicit_citation_rate": summary.get("explicit_citation_rate"),
         "citation_grounding_validity_rate": summary["citation_grounding_validity_rate"],
         "lexical_concept_coverage": summary["lexical_concept_coverage"],
         "total_tokens": tel.get("total_tokens"),
@@ -869,9 +949,17 @@ def write_rag_eval_reports(
         "json_report_file": json_path.name,
     }
 
-    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+    existing_fields: Optional[List[str]] = None
+    if csv_path.exists() and csv_path.stat().st_size > 0:
+        with csv_path.open("r", encoding="utf-8", newline="") as read_fh:
+            first_row = next(csv.reader(read_fh), None)
+            if first_row:
+                existing_fields = first_row
+
+    fieldnames = existing_fields if existing_fields is not None else list(row.keys())
+    write_header = existing_fields is None
     with csv_path.open("a", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(row.keys()))
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
         if write_header:
             writer.writeheader()
         writer.writerow(row)

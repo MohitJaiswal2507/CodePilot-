@@ -821,3 +821,118 @@ def test_failed_generation_captured_in_live_report_and_aggregated_with_success(t
     assert failed_only["mean_success_latency_ms"] is None
     assert failed_only["mean_failure_latency_ms"] == pytest.approx(120000.0)
 
+
+def test_live_failure_exclusion_diagnostic_metrics_and_csv_compatibility(tmp_path, monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "mock_diag_key")
+    monkeypatch.setattr(settings, "GEMINI_REWRITE_MODEL", "gemini-3.5-flash-lite")
+    monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", False)
+
+    # rag_ans_01: generation succeeds with explicit citation
+    # rag_conv_01: rewrite succeeds, generation times out (is_error=True)
+    # rag_unans_01: threshold refusal (mocked embedder? Wait: use low-similarity custom store or patch threshold)
+    def fake_generate_content(**kwargs):
+        model_name = kwargs["model"]
+        if model_name == "gemini-3.5-flash-lite":
+            return SimpleNamespace(
+                text="How does a closure retain outer variables after the outer function finishes?",
+                model_version="gemini-3.5-flash-lite",
+                usage_metadata=SimpleNamespace(prompt_token_count=30, candidates_token_count=10, total_token_count=40, thoughts_token_count=None),
+            )
+        low_contents = kwargs["contents"].lower()
+        if "how does it remember outer variables" in low_contents:
+            raise httpx.ReadTimeout("Simulated 120s timeout")
+        if "merge sort" in low_contents:
+            return SimpleNamespace(
+                text="Merge sort has O(n log n) time and O(n) space [Document: dsa_algorithms.pdf, Page: 1].",
+                model_version="gemini-3.8-flash",
+                usage_metadata=SimpleNamespace(prompt_token_count=90, candidates_token_count=20, total_token_count=110, thoughts_token_count=None),
+            )
+        raise httpx.ReadTimeout("Simulated 120s timeout")
+
+    # Test with real similarity threshold exclusion on rag_unans_01 via custom embedder returning < 0.35 for unanswerable
+    class _LowSimUnansEmbedder(_DeterministicKeywordEmbedder):
+        def encode(self, texts, show_progress_bar=False):
+            class _Arr:
+                def __init__(self, rows):
+                    self._rows = rows
+
+                def tolist(self):
+                    return self._rows
+
+            rows = []
+            for text in texts:
+                low = text.lower()
+                if "kubernetes" in low:
+                    rows.append([0.0] * 11 + [-1.0])
+                else:
+                    rows.append([1.0 if any(kw in low for kw in kws) else 0.0 for kws in self.KEYWORDS])
+            return _Arr(rows)
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = fake_generate_content
+
+    fresh_dir = tmp_path / "fresh_csv"
+    with patch("app.services.llm_gateway.genai.Client", return_value=mock_client):
+        report = rag_evaluator.run_rag_evaluation(
+            mode="live",
+            model="gemini-3.8-flash",
+            case_ids=["rag_ans_01", "rag_conv_01", "rag_unans_01"],
+            output_dir=fresh_dir,
+            embedder=_LowSimUnansEmbedder(),
+        )
+
+    s = report["summary"]
+    assert s["error_count"] == 1
+    assert s["error_rate"] == pytest.approx(0.5)  # 1 failed out of 2 generation-eligible cases
+    assert s["lexical_concept_coverage"] == pytest.approx(1.0)  # rag_conv_01 error excluded
+    assert s["citation_grounding_validity_rate"] == pytest.approx(1.0)
+    assert s["explicit_citation_rate"] == pytest.approx(1.0)
+    assert s["false_refusal_rate"] == pytest.approx(0.0)
+    assert s["refusal_accuracy"] == pytest.approx(1.0)
+    # Orthogonal zero vectors give 1 relevant chunk (sim ~1.0) and 3 zero-sim chunks (sim 0.0 < 0.35) => 0.75 noise
+    assert s["context_noise_rate"] == pytest.approx(0.75)
+
+    # Verify failed case still keeps retrieval metrics and failure telemetry
+    conv_case = next(c for c in report["cases"] if c["case_id"] == "rag_conv_01")
+    assert conv_case["is_error"] is True
+    assert conv_case["retrieval"]["recall_at_k"] == pytest.approx(1.0)
+    assert conv_case["answer"]["lexical_concept_coverage"] is None
+    assert conv_case["answer"]["citations_grounded"] is None
+    assert conv_case["telemetry"]["generation"]["success"] is False
+    assert conv_case["telemetry"]["generation"]["error_category"] == "timeout"
+
+    # Fresh CSV includes new columns cleanly
+    with (fresh_dir / "rag_eval_summary.csv").open("r", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 1
+    assert rows[0]["error_count"] == "1"
+    assert float(rows[0]["error_rate"]) == pytest.approx(0.5)
+    assert float(rows[0]["explicit_citation_rate"]) == pytest.approx(1.0)
+    assert float(rows[0]["context_noise_rate"]) == pytest.approx(0.75)
+
+    # Appending to a legacy 21-column CSV preserves column alignment safely
+    legacy_dir = tmp_path / "legacy_csv"
+    legacy_dir.mkdir(parents=True)
+    legacy_headers = [
+        "timestamp", "dataset_version", "mode", "judge_enabled", "total_cases",
+        "precision_at_k", "recall_at_k", "mrr",
+        "answerable_mean_top1_similarity", "unanswerable_mean_top1_similarity",
+        "refusal_accuracy", "false_refusal_rate", "clarification_accuracy",
+        "citation_presence_rate", "citation_grounding_validity_rate",
+        "lexical_concept_coverage", "total_tokens", "mean_latency_ms",
+        "judge_mean_faithfulness", "judge_mean_relevance", "json_report_file",
+    ]
+    legacy_csv = legacy_dir / "rag_eval_summary.csv"
+    with legacy_csv.open("w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=legacy_headers)
+        w.writeheader()
+        w.writerow({k: "0" for k in legacy_headers})
+
+    rag_evaluator.write_rag_eval_reports(report, output_dir=legacy_dir)
+    with legacy_csv.open("r", encoding="utf-8") as fh:
+        legacy_rows = list(csv.DictReader(fh))
+    assert len(legacy_rows) == 2
+    assert None not in legacy_rows[1]  # No extra unaligned fields appended!
+
