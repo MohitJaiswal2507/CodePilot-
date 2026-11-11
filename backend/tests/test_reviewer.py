@@ -322,3 +322,82 @@ def test_cross_user_code_review_isolation(mock_review_exec, clean_reviews):
     del_a = client.delete(f"/api/reviewer/{review_a_id}", headers=headers_a)
     assert del_a.status_code == 200
 
+
+@patch("app.api.routes.reviewer.execute_code_review")
+def test_review_graph_exception_returns_sanitized_500_without_leaking_details(mock_review_exec, caplog):
+    mock_review_exec.side_effect = RuntimeError(
+        r"Gemini SDK failure reading C:\Users\secret\.env at https://internal.db.local/api?key=LEAKED_KEY"
+    )
+    token = generate_test_jwt("reviewer_user_alice")
+
+    with caplog.at_level("ERROR", logger="app.api.routes.reviewer"):
+        res = client.post(
+            "/api/reviewer/review",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"code": "def SECRET_USER_FN():\n    return 42\n", "language": "python"},
+        )
+
+    assert res.status_code == 500
+    assert res.json()["detail"] == "Failed to complete code review due to an unexpected internal error."
+    for sensitive in ("C:\\Users", ".env", "internal.db.local", "LEAKED_KEY", "SECRET_USER_FN"):
+        assert sensitive not in res.text
+
+    # Diagnostic detail logged server-side, without submitted source code
+    assert any("Code review execution failed" in rec.message for rec in caplog.records)
+    assert all("SECRET_USER_FN" not in rec.getMessage() for rec in caplog.records)
+
+
+@patch("app.api.routes.reviewer.execute_code_review")
+def test_review_db_commit_failure_triggers_rollback_and_returns_sanitized_500(mock_review_exec, clean_reviews):
+    from sqlalchemy.orm import Session
+    from app.schemas.reviewer import CodeReviewResult
+
+    mock_review_exec.return_value = CodeReviewResult.model_validate({
+        "summary": "Valid addition function.",
+        "overall_assessment": "excellent",
+        "quality_score": 10,
+        "detected_issues": [],
+        "edge_cases": [],
+        "complexity": {
+            "time_complexity": "O(1)",
+            "time_reasoning": "Constant time operation.",
+            "space_complexity": "O(1)",
+            "space_reasoning": "No extra memory allocated.",
+        },
+        "improvement_suggestions": [],
+        "corrected_code": None,
+        "explanation_of_changes": None,
+        "static_analysis_notes": "Static syntax verification passed.",
+    })
+
+    token = generate_test_jwt("reviewer_user_alice")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    orig_rollback = Session.rollback
+    with patch.object(
+        Session,
+        "commit",
+        side_effect=RuntimeError("postgresql://admin:db_secret@neon.internal:5432/neondb commit failed"),
+    ), patch.object(
+        Session,
+        "rollback",
+        autospec=True,
+        side_effect=orig_rollback,
+    ) as mock_rollback:
+        res = client.post(
+            "/api/reviewer/review",
+            headers=headers,
+            json={"code": "def add(a, b):\n    return a + b\n", "language": "python"},
+        )
+
+    assert res.status_code == 500
+    assert res.json()["detail"] == "Failed to save code review due to an internal error."
+    mock_rollback.assert_called_once()
+    for sensitive in ("postgresql://", "db_secret", "neon.internal", "neondb", "commit failed"):
+        assert sensitive not in res.text
+
+    # Verify DB session remains healthy for subsequent reads
+    hist_res = client.get("/api/reviewer/history", headers=headers)
+    assert hist_res.status_code == 200
+    assert hist_res.json()["total"] == 0
+
