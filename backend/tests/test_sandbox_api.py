@@ -331,6 +331,38 @@ def test_unexpected_exception_returns_sanitized_500(mock_exec):
     assert ".env" not in res.text
 
 
+@patch("subprocess.Popen")
+@patch("subprocess.run")
+def test_unrecognized_pre_start_docker_error_returns_sanitized_503_and_cleans_up(mock_run, mock_popen):
+    """End-to-end API path: unrecognized pre-start host error -> 503 with zero raw Docker stderr leakage."""
+    from tests.test_sandbox_service import _make_streaming_proc
+
+    mock_popen.return_value = _make_streaming_proc(
+        stdout_bytes=b"",
+        stderr_bytes=b"cgroup2 mkdir /sys/fs/cgroup/secret-host-node: seccomp apparmor error\n",
+        returncode=126,
+    )
+
+    res = client.post(
+        "/api/v1/sandbox/execute",
+        headers=_auth_headers("api_infra_test_user"),
+        json={"code": "print('hi')", "language": "python"},
+    )
+    assert res.status_code == 503
+    body = res.json()
+    assert body["status"] == "infrastructure_error"
+    assert body["stderr"] == "Code execution sandbox service is temporarily unavailable."
+    assert body["exit_code"] is None
+    assert "sys/fs/cgroup" not in res.text
+    assert "secret-host-node" not in res.text
+    assert "seccomp" not in res.text
+    assert "apparmor" not in res.text
+
+    rm_calls = [c[0][0] for c in mock_run.call_args_list if c[0][0][:3] == ["docker", "rm", "-f"]]
+    assert len(rm_calls) >= 1
+    assert rm_calls[0][3].startswith("codepilot-sbx-")
+
+
 # ==============================================================================
 # 5. CONCURRENCY LIMIT & RATE LIMIT TESTS
 # ==============================================================================

@@ -566,7 +566,11 @@ def test_docker_daemon_and_image_errors_classified(mock_run, mock_popen):
     res_daemon = execute_code(code="print('test')", language="python")
     assert res_daemon.status == "infrastructure_error"
     assert "Docker daemon is not running or unreachable" in res_daemon.stderr
+    assert "npipe://" not in res_daemon.stderr
+    rm_calls = [c[0][0] for c in mock_run.call_args_list if c[0][0][:3] == ["docker", "rm", "-f"]]
+    assert len(rm_calls) >= 1
 
+    mock_run.reset_mock()
     mock_popen.return_value = _make_streaming_proc(
         stderr_bytes=b"Unable to find image 'python:3.12-slim' locally",
         returncode=125,
@@ -574,6 +578,61 @@ def test_docker_daemon_and_image_errors_classified(mock_run, mock_popen):
     res_image = execute_code(code="print('test')", language="python")
     assert res_image.status == "infrastructure_error"
     assert "not available locally" in res_image.stderr
+    rm_calls = [c[0][0] for c in mock_run.call_args_list if c[0][0][:3] == ["docker", "rm", "-f"]]
+    assert len(rm_calls) >= 1
+
+
+@patch("subprocess.Popen")
+@patch("subprocess.run")
+def test_unrecognized_pre_start_docker_error_classified_as_infrastructure_with_cleanup(mock_run, mock_popen, caplog):
+    """Unrecognized CLI/OCI/cgroup/seccomp/AppArmor errors before markers must classify as infrastructure_error."""
+    raw_host_err = b"cgroup2 mkdir /sys/fs/cgroup/host-secret-tenant: apparmor seccomp denied\n"
+    mock_popen.return_value = _make_streaming_proc(
+        stdout_bytes=b"",
+        stderr_bytes=raw_host_err,
+        returncode=126,
+    )
+
+    with caplog.at_level("ERROR", logger="app.services.sandbox_service"):
+        res = execute_code(code="SECRET_CODE = 'do_not_log'\nprint(SECRET_CODE)", language="python")
+
+    assert res.status == "infrastructure_error"
+    assert res.stdout == ""
+    assert "apparmor" not in res.stderr.lower()
+    assert "host-secret-tenant" not in res.stderr
+    assert "/sys/fs/cgroup" not in res.stderr
+
+    # Diagnostic detail preserved server-side without exposing user source code
+    assert any(
+        "Sandbox pre-start failure" in rec.message
+        and "host-secret-tenant" in rec.message
+        and "do_not_log" not in rec.message
+        for rec in caplog.records
+    )
+
+    # Container cleanup invoked after pre-start failure
+    rm_calls = [c[0][0] for c in mock_run.call_args_list if c[0][0][:3] == ["docker", "rm", "-f"]]
+    assert len(rm_calls) >= 1
+    assert rm_calls[0][3].startswith("codepilot-sbx-")
+
+
+@patch("subprocess.Popen")
+@patch("subprocess.run")
+def test_post_marker_runtime_error_not_misclassified_as_infrastructure(mock_run, mock_popen):
+    """Once markers.start or compile marker is emitted, stderr phrases must not become infrastructure_error."""
+    def _popen_runtime(cmd, **kwargs):
+        m = _extract_markers_from_cmd(cmd)
+        return _make_streaming_proc(
+            stdout_bytes=f"{m['start']}\n".encode("utf-8"),
+            stderr_bytes=b"ValueError: unable to find image or oci runtime in user string\n",
+            returncode=1,
+        )
+
+    mock_popen.side_effect = _popen_runtime
+    res = execute_code(code="raise ValueError('oci runtime')", language="python")
+    assert res.status == "runtime_error"
+    assert "oci runtime" in res.stderr
+    assert res.exit_code == 1
 
 
 @patch("subprocess.Popen")

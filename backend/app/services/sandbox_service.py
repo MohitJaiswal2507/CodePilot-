@@ -328,9 +328,11 @@ def _classify_infrastructure_error(
     raw_stderr: str,
     returncode: Optional[int],
     image_ref: str,
-) -> Optional[ExecutionResult]:
+) -> ExecutionResult:
     """
-    Detect Docker CLI, daemon, image, or OCI runtime failures when container execution did not start.
+    Classify Docker CLI, daemon, image, OCI runtime, cgroup, seccomp, or AppArmor failures
+    when execution terminates before user code starts or a compiler marker is emitted.
+    Always returns a sanitized `infrastructure_error` without echoing raw host/Docker stderr.
     """
     err_lower = raw_stderr.lower()
 
@@ -366,21 +368,12 @@ def _classify_infrastructure_error(
             duration_ms=0.0,
         )
 
-    if (
-        "docker: error response from daemon" in err_lower
-        or "oci runtime" in err_lower
-        or "failed to create shim" in err_lower
-        or (returncode == 125 and "docker:" in err_lower)
-    ):
-        summary = raw_stderr.strip().splitlines()[0] if raw_stderr.strip() else "Docker container runtime error."
-        return ExecutionResult(
-            status="infrastructure_error",
-            stderr=f"Docker runtime error: {summary}",
-            exit_code=returncode,
-            duration_ms=0.0,
-        )
-
-    return None
+    return ExecutionResult(
+        status="infrastructure_error",
+        stderr="Sandbox container failed to start due to a container runtime or infrastructure error.",
+        exit_code=returncode,
+        duration_ms=0.0,
+    )
 
 
 def _run_container_streaming(
@@ -764,17 +757,25 @@ def execute_code(
             duration_ms=float(exec_timeout * 1000),
         )
 
-    # 6. Pre-Execution Docker Infrastructure Errors (image missing, daemon unreachable, etc.)
+    # 6. Pre-Execution Docker Infrastructure Errors (image missing, daemon unreachable, OCI/cgroup/seccomp failures)
     started_user_code = raw_stdout.startswith(markers.start)
     compile_marker_present = (
         raw_stdout.lstrip().startswith(markers.compile_error)
         or raw_stdout.lstrip().startswith(markers.compile_timeout)
     )
     if not started_user_code and not compile_marker_present:
+        diagnostic_err = " ".join(raw_stderr.strip().splitlines())[:500]
+        logger.error(
+            "Sandbox pre-start failure before user execution or compile marker "
+            "(language=%s, image=%s, exit_code=%s, stderr=%s)",
+            clean_lang,
+            image_ref,
+            proc_returncode,
+            diagnostic_err or "<empty>",
+        )
         infra_err = _classify_infrastructure_error(raw_stderr, proc_returncode, image_ref)
-        if infra_err is not None:
-            infra_err.duration_ms = total_wall_ms
-            return infra_err
+        infra_err.duration_ms = total_wall_ms
+        return infra_err
 
     # 7. Parse Compilation Outcomes (occur strictly before any user code runs)
     leading_stdout = raw_stdout.lstrip()
