@@ -1,3 +1,4 @@
+import json
 import pytest
 import time
 import uuid
@@ -282,4 +283,156 @@ def test_user_owned_conversations_strict_isolation(mock_jwks, isolated_conversat
             json={"question": "Sneaky message"},
         )
         assert idor_msg.status_code == 404
+
+
+# -----------------------------------------------------------------------------
+# 3. Regression Tests: Fail-Closed JWT Key Resolution & Forged Token Rejection
+# -----------------------------------------------------------------------------
+def _make_eddsa_token_with_kid(
+    user_id: str,
+    kid: str | None = None,
+    key=None,
+    issuer: str | None = None,
+) -> str:
+    now = int(time.time())
+    payload = {
+        "sub": user_id,
+        "email": f"{user_id}@codepilot.ai",
+        "iat": now - 10,
+        "exp": now + 3600,
+    }
+    effective_iss = issuer if issuer is not None else settings.NEON_AUTH_ISSUER
+    if effective_iss:
+        payload["iss"] = effective_iss
+    if settings.NEON_AUTH_AUDIENCE:
+        payload["aud"] = settings.NEON_AUTH_AUDIENCE
+    headers = {"kid": kid} if kid is not None else None
+    return jwt.encode(payload, key or ed_private_key, algorithm="EdDSA", headers=headers)
+
+
+def _real_jwks_client_for_ed_key(expected_kid: str = "neon-kid-1") -> jwt.PyJWKClient:
+    """Create a real PyJWKClient backed by an in-memory JWK (zero network I/O)."""
+    jwk_dict = jwt.PyJWK.from_dict(
+        json.loads(jwt.algorithms.OKPAlgorithm.to_jwk(ed_public_key))
+        | {"kid": expected_kid, "use": "sig", "alg": "EdDSA"}
+    )
+    jwks_client = jwt.PyJWKClient("https://mocked.local/.well-known/jwks.json", cache_jwk_set=False)
+    jwks_client.get_signing_keys = MagicMock(return_value=[jwk_dict])  # type: ignore[method-assign]
+    return jwks_client
+
+
+@pytest.mark.parametrize("env_name", ["development", "production"])
+def test_unknown_and_missing_kid_rejected_with_401(env_name):
+    jwks_client = _real_jwks_client_for_ed_key("neon-kid-1")
+    valid_token = _make_eddsa_token_with_kid("alice", kid="neon-kid-1")
+    unknown_kid_token = _make_eddsa_token_with_kid("alice", kid="unknown-kid-999")
+    missing_kid_token = _make_eddsa_token_with_kid("alice", kid=None)
+
+    with patch("app.core.auth.get_jwks_client", return_value=jwks_client), \
+         patch.object(settings, "ENVIRONMENT", env_name), \
+         patch.object(settings, "ALLOW_DEV_FALLBACK_AUTH", True):
+        ok_res = client.get("/api/conversations", headers={"Authorization": f"Bearer {valid_token}"})
+        assert ok_res.status_code == 200
+
+        res_unknown = client.get("/api/conversations", headers={"Authorization": f"Bearer {unknown_kid_token}"})
+        assert res_unknown.status_code == 401
+
+        res_missing = client.get("/api/conversations", headers={"Authorization": f"Bearer {missing_kid_token}"})
+        assert res_missing.status_code == 401
+
+
+@pytest.mark.parametrize("env_name", ["development", "production"])
+def test_jwks_exception_and_empty_db_fallback_rejected_with_401(env_name):
+    mock_client = MagicMock()
+    mock_client.get_signing_key_from_jwt.side_effect = jwt.PyJWKClientError("JWKS endpoint unreachable")
+    forged_token = _make_eddsa_token_with_kid("victim_user_id", kid="forged-kid", key=ed25519.Ed25519PrivateKey.generate())
+
+    # Simulated DB session whose neon_auth.jwks query returns no matching row
+    mock_db = MagicMock()
+    mock_db.execute.return_value.mappings.return_value.first.return_value = None
+
+    from app.core.auth import verify_neon_jwt
+    from fastapi import HTTPException
+
+    with patch("app.core.auth.get_jwks_client", return_value=mock_client), \
+         patch.object(settings, "ENVIRONMENT", env_name), \
+         patch.object(settings, "ALLOW_DEV_FALLBACK_AUTH", True):
+        # Direct verifier check with DB returning None
+        with pytest.raises(HTTPException) as exc_info:
+            verify_neon_jwt(forged_token, db=mock_db)
+        assert exc_info.value.status_code == 401
+        mock_db.execute.assert_called_once()
+
+        # Route-level check
+        res = client.get("/api/conversations", headers={"Authorization": f"Bearer {forged_token}"})
+        assert res.status_code == 401
+
+
+def test_missing_kid_does_not_bypass_via_db_jwks_lookup():
+    mock_client = MagicMock()
+    mock_client.get_signing_key_from_jwt.side_effect = jwt.PyJWKClientError('Unable to find a signing key that matches: "None"')
+    missing_kid_token = _make_eddsa_token_with_kid("alice", kid=None)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.mappings.return_value.first.return_value = {
+        "publicKey": ed_public_key,
+    }
+
+    from app.core.auth import verify_neon_jwt
+    from fastapi import HTTPException
+
+    with patch("app.core.auth.get_jwks_client", return_value=mock_client), \
+         patch.object(settings, "ENVIRONMENT", "production"):
+        with pytest.raises(HTTPException) as exc_info:
+            verify_neon_jwt(missing_kid_token, db=mock_db)
+        assert exc_info.value.status_code == 401
+        mock_db.execute.assert_not_called()
+
+
+@pytest.mark.parametrize("endpoint,method,body", [
+    ("/api/conversations", "GET", None),
+    ("/api/reviewer/history", "GET", None),
+    ("/api/v1/sandbox/execute", "POST", {"code": "print(1)", "language": "python"}),
+])
+def test_forged_jwt_with_victim_sub_cannot_access_protected_endpoints(endpoint, method, body):
+    jwks_client = _real_jwks_client_for_ed_key("neon-kid-1")
+    attacker_private_key = ed25519.Ed25519PrivateKey.generate()
+    # Forge a JWT claiming victim_sub with unknown kid (previously disabled verify_signature)
+    forged_unknown_kid = _make_eddsa_token_with_kid(
+        "victim_user_alice",
+        kid="attacker-kid",
+        key=attacker_private_key,
+    )
+    # Also test HS256 forged with >=32-byte secret + unknown kid, and alg="none"
+    forged_hs256 = jwt.encode(
+        {
+            "sub": "victim_user_alice",
+            "iat": int(time.time()) - 10,
+            "exp": int(time.time()) + 3600,
+            **({"iss": settings.NEON_AUTH_ISSUER} if settings.NEON_AUTH_ISSUER else {}),
+        },
+        "insecure-dev-fallback-secret-for-test-only",
+        algorithm="HS256",
+        headers={"kid": "attacker-hs-kid"},
+    )
+    forged_alg_none = jwt.encode(
+        {
+            "sub": "victim_user_alice",
+            "iat": int(time.time()) - 10,
+            "exp": int(time.time()) + 3600,
+        },
+        "",
+        algorithm="none",
+    )
+
+    with patch("app.core.auth.get_jwks_client", return_value=jwks_client), \
+         patch.object(settings, "ENVIRONMENT", "development"), \
+         patch.object(settings, "ALLOW_DEV_FALLBACK_AUTH", True):
+        for token in (forged_unknown_kid, forged_hs256, forged_alg_none):
+            headers = {"Authorization": f"Bearer {token}"}
+            if method == "GET":
+                res = client.get(endpoint, headers=headers)
+            else:
+                res = client.post(endpoint, headers=headers, json=body)
+            assert res.status_code == 401
 

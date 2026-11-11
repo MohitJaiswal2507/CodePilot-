@@ -42,10 +42,11 @@ def get_jwks_client() -> PyJWKClient:
 
 def verify_neon_jwt(token: str, db: Optional[Session] = None) -> Dict[str, Any]:
     """
-    Verify a Neon Auth JWT:
+    Verify a Neon Auth JWT strictly with cryptographic signature verification:
     1. Extracts signing key from remote Neon Auth JWKS endpoint (with caching & rotation support).
-    2. Fallback: Checks local/db jwks if remote JWKS endpoint is unreachable in dev/test environment.
-    3. Validates signature, algorithms (EdDSA, RS256, ES256, HS256), expiration, and optional issuer.
+    2. Optional fallback: Looks up matching `kid` in local `neon_auth.jwks` table when DB session is provided.
+    3. Fails closed with HTTP 401 whenever no signing key can be resolved (never decodes unverified JWTs).
+    4. Validates signature (`verify_signature=True`), allowed algorithms, expiration, and issuer/audience.
     """
     allowed_algs = ["EdDSA", "RS256", "ES256", "HS256"]
 
@@ -59,10 +60,10 @@ def verify_neon_jwt(token: str, db: Optional[Session] = None) -> Dict[str, Any]:
         )
 
     signing_alg = unverified_header.get("alg")
-    if signing_alg and signing_alg not in allowed_algs:
+    if not signing_alg or signing_alg not in allowed_algs:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Unsupported signing algorithm: '{signing_alg}'. Allowed algorithms: {allowed_algs}",
+            detail=f"Unsupported or missing signing algorithm: '{signing_alg}'. Allowed algorithms: {allowed_algs}",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -76,32 +77,44 @@ def verify_neon_jwt(token: str, db: Optional[Session] = None) -> Dict[str, Any]:
         signing_key = signing_key_obj.key
     except Exception as exc:
         jwks_error = exc
-        logger.debug("Remote JWKS resolution failed: %s; attempting database/mock fallback", exc)
+        logger.debug("Remote JWKS resolution failed: %s; checking database JWKS fallback", exc)
 
-    # Step B: Fallback to neon_auth.jwks table if database session is provided
-    if signing_key is None and db is not None:
+    # Step B: Fallback to neon_auth.jwks table by exact `kid` if database session is provided
+    raw_kid = unverified_header.get("kid")
+    kid = raw_kid.strip() if isinstance(raw_kid, str) else None
+    if signing_key is None and db is not None and kid:
         try:
-            kid = unverified_header.get("kid")
-            query = "SELECT publicKey FROM neon_auth.jwks"
-            params = {}
-            if kid:
-                query += " WHERE id = :kid"
-                params["kid"] = kid
-            query += " ORDER BY createdAt DESC LIMIT 1;"
-            result = db.execute(text(query), params).mappings().first()
+            result = db.execute(
+                text(
+                    """
+                    SELECT publicKey FROM neon_auth.jwks
+                    WHERE id = :kid
+                    ORDER BY createdAt DESC LIMIT 1;
+                    """
+                ),
+                {"kid": kid},
+            ).mappings().first()
             if result and result.get("publicKey"):
                 signing_key = result["publicKey"]
         except Exception as db_exc:
             logger.debug("Database JWKS lookup failed: %s", db_exc)
 
-    # Step C: Fallback for test / dev environment tokens
-    if signing_key is None and settings.ALLOW_DEV_FALLBACK_AUTH:
-        # Check if this is an unverified test/mock token in test/dev mode
-        # or if signing_key can be retrieved from dev environment configuration
-        pass
+    # Always fail closed if no signing key was resolved; never decode an unverified JWT.
+    if not signing_key:
+        if jwks_error is not None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Could not verify token against Neon Auth JWKS: {str(jwks_error)}",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token: signing key could not be resolved.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     options = {
-        "verify_signature": signing_key is not None,
+        "verify_signature": True,
         "verify_exp": True,
         "verify_nbf": True,
         "verify_iat": True,
@@ -112,7 +125,7 @@ def verify_neon_jwt(token: str, db: Optional[Session] = None) -> Dict[str, Any]:
     try:
         payload = jwt.decode(
             token,
-            key=signing_key or "insecure-dev-fallback",
+            key=signing_key,
             algorithms=allowed_algs,
             options=options,
             issuer=settings.NEON_AUTH_ISSUER if settings.NEON_AUTH_ISSUER else None,
