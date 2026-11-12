@@ -2,12 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import health, tutor, conversations, reviewer, sandbox
 from app.core.config import settings
-from app.db.session import engine
-from app.db.base import Base
-import app.models # Register all models
-
-# Ensure tables exist
-Base.metadata.create_all(bind=engine)
+import app.models  # noqa: F401 - register SQLAlchemy models
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
