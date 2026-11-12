@@ -804,7 +804,7 @@ def test_m3_java_cpp_delimiter_check_not_described_as_ast():
     java_code = "public class Main { public static void main(String[] args) { for (int i=0; i<3; i++) {} } }"
     static_java = inspect_static_code(java_code, "java")
     assert static_java["analysis_type"] == "delimiter_balance_check"
-    assert static_java["structural_signals"]["signal_source"] == "heuristic_keyword_scan"
+    assert static_java["structural_signals"]["signal_source"] == "heuristic_scan"
     assert static_java["structural_signals"]["has_loops"] is True
 
     res_java = execute_code_review(
@@ -838,4 +838,195 @@ def test_m3_legitimate_python_java_cpp_reviews_remain_intact():
     assert cpp_res.overall_assessment == "good"
     assert cpp_res.quality_score == 8
     assert "delimiter balance check passed" in (cpp_res.static_analysis_notes or "").lower()
+
+
+# -----------------------------------------------------------------------------
+# 6. M-4 Java/C++ Static Analysis Regression Tests
+# -----------------------------------------------------------------------------
+def test_m4_multiline_comments_with_unmatched_delimiters_do_not_false_positive():
+    cpp_code = (
+        "/*\n"
+        " * Unclosed paren in comment: (a + b\n"
+        " * Unmatched brace in comment: } ] )\n"
+        " */\n"
+        "int main() {\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    res = inspect_static_code(cpp_code, "cpp")
+    assert res["has_syntax_error"] is False
+    assert res["error_line"] is None
+    assert res["static_warnings"] == []
+
+
+def test_m4_char_literals_with_braces_or_quotes_do_not_false_positive():
+    java_code = (
+        "public class Chars {\n"
+        "    public static void main(String[] args) {\n"
+        "        char openBrace = '{';\n"
+        "        char closeParen = ')';\n"
+        "        char quote = '\"';\n"
+        "        char backslash = '\\\\';\n"
+        "    }\n"
+        "}\n"
+    )
+    res = inspect_static_code(java_code, "java")
+    assert res["has_syntax_error"] is False
+    assert res["static_warnings"] == []
+
+
+def test_m4_escaped_quotes_and_backslashes_inside_strings():
+    java_code = (
+        "public class Strings {\n"
+        "    public static void main(String[] args) {\n"
+        '        String a = "escaped quote \\" { not a brace";\n'
+        '        String b = "escaped backslash \\\\";\n'
+        '        String c = "ok";\n'
+        "    }\n"
+        "}\n"
+    )
+    res = inspect_static_code(java_code, "java")
+    assert res["has_syntax_error"] is False
+    assert res["static_warnings"] == []
+
+
+def test_m4_real_unmatched_and_mismatched_delimiters_report_line_numbers():
+    unmatched = "int main() {\n    int x = 1;\n    return 0;\n}}\n"
+    res1 = inspect_static_code(unmatched, "cpp")
+    assert res1["has_syntax_error"] is True
+    assert res1["error_line"] == 4
+    assert "Unmatched closing delimiter '}'" in res1["syntax_error"]
+
+    mismatched = "public class A {\n    void f() {\n        int x = (1 + 2];\n    }\n}\n"
+    res2 = inspect_static_code(mismatched, "java")
+    assert res2["has_syntax_error"] is True
+    assert res2["error_line"] == 3
+    assert "Mismatched delimiter: '(' from line 3 closed by ']'" in res2["syntax_error"]
+
+
+def test_m4_malformed_cpp_include_directives_emit_advisory_warning():
+    cpp_code = (
+        "#include <vector\n"
+        '#include "myheader.h\n'
+        "#include <iostream>\n"
+        "int main() {\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    res = inspect_static_code(cpp_code, "cpp")
+    assert res["has_syntax_error"] is False
+    include_warnings = [w for w in res["static_warnings"] if w["type"] == "malformed_include"]
+    assert len(include_warnings) == 2
+    assert [w["line"] for w in include_warnings] == [1, 2]
+
+
+def test_m4_java_package_import_missing_semicolons():
+    java_code = (
+        "package com.example.app\n"
+        "import java.util.List\n"
+        "public class App {\n"
+        "}\n"
+    )
+    res = inspect_static_code(java_code, "java")
+    assert res["has_syntax_error"] is False
+    semi_warnings = [w for w in res["static_warnings"] if w["type"] == "missing_semicolon"]
+    assert len(semi_warnings) == 2
+    assert [w["line"] for w in semi_warnings] == [1, 2]
+
+
+def test_m4_conservative_missing_semicolon_and_malformed_declaration_warnings():
+    java_code = (
+        "public class {\n"
+        "    public static void main(String[] args) {\n"
+        "        int x = 5\n"
+        "        int y = (1 +\n"
+        "            2);\n"
+        "        String z = args[0]\n"
+        "            .trim();\n"
+        "        return;\n"
+        "    }\n"
+        "}\n"
+    )
+    res = inspect_static_code(java_code, "java")
+    assert res["has_syntax_error"] is False
+    decl_warnings = [w for w in res["static_warnings"] if w["type"] == "malformed_declaration"]
+    assert len(decl_warnings) == 1
+    assert decl_warnings[0]["line"] == 1
+
+    semi_warnings = [w for w in res["static_warnings"] if w["type"] == "possible_missing_semicolon"]
+    # Only line 3 (`int x = 5`) should warn; multiline paren (line 4) and chained `.trim()` (line 6) must not warn
+    assert len(semi_warnings) == 1
+    assert semi_warnings[0]["line"] == 3
+
+
+def test_m4_no_warnings_for_ordinary_if_and_for_headers():
+    cpp_code = (
+        "#include <iostream>\n"
+        "int main() {\n"
+        "    int sum = 0;\n"
+        "    for (int i = 0; i < 10; i++) {\n"
+        "        if (i % 2 == 0) {\n"
+        "            sum += i;\n"
+        "        } else {\n"
+        "            sum -= 1;\n"
+        "        }\n"
+        "    }\n"
+        "    return sum;\n"
+        "}\n"
+    )
+    res = inspect_static_code(cpp_code, "cpp")
+    assert res["has_syntax_error"] is False
+    assert res["static_warnings"] == []
+
+
+def test_m4_nested_java_cpp_loops_report_heuristic_loop_depth():
+    cpp_nested = (
+        "int countPairs(int n) {\n"
+        "    int c = 0;\n"
+        "    for (int i = 0; i < n; i++) {\n"
+        "        for (int j = 0; j < n; j++) {\n"
+        "            c++;\n"
+        "        }\n"
+        "    }\n"
+        "    return c;\n"
+        "}\n"
+    )
+    res = inspect_static_code(cpp_nested, "cpp")
+    assert res["structural_signals"]["signal_source"] == "heuristic_scan"
+    assert res["structural_signals"]["has_loops"] is True
+    assert res["structural_signals"]["max_loop_depth"] == 2
+    assert res["structural_signals"]["has_recursion"] is None
+
+
+def test_m4_static_warnings_reach_review_context_and_notes():
+    cpp_code = (
+        "#include <vector\n"
+        "int main() {\n"
+        "    for (int i = 0; i < 5; i++) {\n"
+        "        for (int j = 0; j < 5; j++) {\n"
+        "        }\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    captured_prompts = []
+
+    def mock_llm(prompt: str) -> str:
+        captured_prompts.append(prompt)
+        return _valid_mock_review_json()
+
+    res = execute_code_review(
+        code=cpp_code,
+        language="cpp",
+        user_id="user_m4",
+        llm_callable=mock_llm,
+    )
+    assert len(captured_prompts) == 1
+    assert "STATIC ADVISORY WARNING" in captured_prompts[0]
+    assert "malformed_include" in captured_prompts[0]
+    assert "heuristic scan, not full AST" in captured_prompts[0]
+    assert "max_loop_depth=2" in captured_prompts[0]
+    assert res.static_analysis_notes is not None
+    assert "1 advisory heuristic warning(s)" in res.static_analysis_notes
+    assert "full ast/compiler syntax verification was not performed" in res.static_analysis_notes.lower()
 

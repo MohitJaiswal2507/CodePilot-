@@ -259,10 +259,19 @@ def _format_static_context(static_inspection: Dict[str, Any]) -> str:
                 f"has_loops={signals.get('has_loops')}, has_recursion={signals.get('has_recursion')} "
                 f"(recursive_functions={rec_label})."
             )
-        elif source == "heuristic_keyword_scan":
+        elif source in ("heuristic_scan", "heuristic_keyword_scan"):
             lines.append(
-                f"STATIC STRUCTURAL SIGNALS (heuristic keyword scan, not full AST): has_loops={signals.get('has_loops')}."
+                f"STATIC STRUCTURAL SIGNALS (heuristic scan, not full AST): "
+                f"max_loop_depth={signals.get('max_loop_depth')}, has_loops={signals.get('has_loops')}."
             )
+
+    warnings = static_inspection.get("static_warnings")
+    if isinstance(warnings, list) and warnings:
+        for warn in warnings[:10]:
+            if isinstance(warn, dict) and warn.get("message"):
+                lines.append(
+                    f"STATIC ADVISORY WARNING (line {warn.get('line')}, {warn.get('type')}): {warn.get('message')}"
+                )
 
     return ("\n" + "\n".join(lines)) if lines else ""
 
@@ -587,10 +596,21 @@ def format_result_node(state: ReviewState) -> Dict[str, Any]:
         else:
             static_notes = f"Static inspection detected an error: {static_inspection.get('syntax_error')}"
     else:
+        raw_warnings = static_inspection.get("static_warnings")
+        warn_count = len(raw_warnings) if isinstance(raw_warnings, list) else 0
         if language == "python":
-            static_notes = "Python AST/syntax inspection passed (no syntax errors detected)."
+            if warn_count:
+                static_notes = f"Python AST/syntax inspection passed with {warn_count} static warning(s)."
+            else:
+                static_notes = "Python AST/syntax inspection passed (no syntax errors detected)."
         elif language in ("java", "cpp"):
-            static_notes = "Basic delimiter balance check passed (full AST/compiler syntax verification was not performed)."
+            if warn_count:
+                static_notes = (
+                    f"Basic delimiter balance check passed with {warn_count} advisory heuristic warning(s) "
+                    f"(full AST/compiler syntax verification was not performed)."
+                )
+            else:
+                static_notes = "Basic delimiter balance check passed (full AST/compiler syntax verification was not performed)."
         else:
             static_notes = "Static inspection completed."
 
