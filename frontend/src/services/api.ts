@@ -630,14 +630,64 @@ export async function sendConversationMessage(
 // AI Code Reviewer API Services
 // -----------------------------------------------------------------------------
 
+export interface ReviewerRequestOptions {
+  signal?: AbortSignal;
+}
+
+function extractReviewerErrorMessage(errorData: unknown, fallback: string): string {
+  if (errorData && typeof errorData === "object" && "detail" in errorData) {
+    const detail = (errorData as { detail?: unknown }).detail;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail.trim();
+    }
+    if (Array.isArray(detail)) {
+      const messages = detail
+        .map((item) => {
+          if (typeof item === "string" && item.trim()) return item.trim();
+          if (item && typeof item === "object" && "msg" in item) {
+            const msg = (item as { msg?: unknown }).msg;
+            if (typeof msg === "string" && msg.trim()) return msg.trim();
+          }
+          return null;
+        })
+        .filter((msg): msg is string => Boolean(msg));
+      if (messages.length > 0) {
+        return messages.join("; ");
+      }
+    }
+  }
+  return fallback;
+}
+
+export async function submitCodeReview(
+  data: { code: string; language: string; model?: string },
+  options?: ReviewerRequestOptions
+): Promise<CodeReviewResponse>;
+export async function submitCodeReview(
+  code: string,
+  language?: string,
+  model?: string,
+  options?: ReviewerRequestOptions
+): Promise<CodeReviewResponse>;
 export async function submitCodeReview(
   codeOrData: string | { code: string; language: string; model?: string },
-  language?: string,
-  model?: string
+  languageOrOptions?: string | ReviewerRequestOptions,
+  model?: string,
+  options?: ReviewerRequestOptions
 ): Promise<CodeReviewResponse> {
   const code = typeof codeOrData === "string" ? codeOrData : codeOrData.code;
-  const lang = typeof codeOrData === "string" ? (language || "python") : codeOrData.language;
+  const lang =
+    typeof codeOrData === "string"
+      ? (typeof languageOrOptions === "string" ? languageOrOptions : "python")
+      : codeOrData.language;
   const mdl = typeof codeOrData === "string" ? model : codeOrData.model;
+  const resolvedOptions =
+    options ??
+    (typeof codeOrData !== "string" &&
+    typeof languageOrOptions === "object" &&
+    languageOrOptions !== null
+      ? languageOrOptions
+      : undefined);
 
   const headers = await getAuthHeaders({
     "Content-Type": "application/json",
@@ -647,6 +697,7 @@ export async function submitCodeReview(
   const response = await fetch(`${API_BASE_URL}/api/reviewer/review`, {
     method: "POST",
     headers,
+    signal: resolvedOptions?.signal,
     body: JSON.stringify({
       code,
       language: lang,
@@ -655,8 +706,10 @@ export async function submitCodeReview(
   });
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `Code review failed with status ${response.status}`);
+    const errorData = await response.json().catch(() => null);
+    throw new Error(
+      extractReviewerErrorMessage(errorData, `Code review failed with status ${response.status}`)
+    );
   }
 
   return response.json();
@@ -664,7 +717,8 @@ export async function submitCodeReview(
 
 export async function fetchCodeReviewHistory(
   limit: number = 20,
-  offset: number = 0
+  offset: number = 0,
+  options?: ReviewerRequestOptions
 ): Promise<CodeReviewHistoryResponse> {
   const headers = await getAuthHeaders({
     "Accept": "application/json",
@@ -676,18 +730,24 @@ export async function fetchCodeReviewHistory(
       method: "GET",
       headers,
       cache: "no-store",
+      signal: options?.signal,
     }
   );
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `Failed to fetch review history: HTTP ${response.status}`);
+    const errorData = await response.json().catch(() => null);
+    throw new Error(
+      extractReviewerErrorMessage(errorData, `Failed to fetch review history: HTTP ${response.status}`)
+    );
   }
 
   return response.json();
 }
 
-export async function fetchCodeReviewDetail(id: string): Promise<CodeReviewResponse> {
+export async function fetchCodeReviewDetail(
+  id: string,
+  options?: ReviewerRequestOptions
+): Promise<CodeReviewResponse> {
   const headers = await getAuthHeaders({
     "Accept": "application/json",
   });
@@ -698,18 +758,24 @@ export async function fetchCodeReviewDetail(id: string): Promise<CodeReviewRespo
       method: "GET",
       headers,
       cache: "no-store",
+      signal: options?.signal,
     }
   );
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `Failed to fetch review details: HTTP ${response.status}`);
+    const errorData = await response.json().catch(() => null);
+    throw new Error(
+      extractReviewerErrorMessage(errorData, `Failed to fetch review details: HTTP ${response.status}`)
+    );
   }
 
   return response.json();
 }
 
-export async function deleteCodeReview(id: string): Promise<void> {
+export async function deleteCodeReview(
+  id: string,
+  options?: ReviewerRequestOptions
+): Promise<void> {
   const headers = await getAuthHeaders({
     "Accept": "application/json",
   });
@@ -719,16 +785,19 @@ export async function deleteCodeReview(id: string): Promise<void> {
     {
       method: "DELETE",
       headers,
+      signal: options?.signal,
     }
   );
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `Failed to delete review: HTTP ${response.status}`);
+    const errorData = await response.json().catch(() => null);
+    throw new Error(
+      extractReviewerErrorMessage(errorData, `Failed to delete review: HTTP ${response.status}`)
+    );
   }
 }
 
-export async function clearCodeReviewHistory(): Promise<void> {
+export async function clearCodeReviewHistory(options?: ReviewerRequestOptions): Promise<void> {
   const headers = await getAuthHeaders({
     "Accept": "application/json",
   });
@@ -736,11 +805,14 @@ export async function clearCodeReviewHistory(): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/reviewer`, {
     method: "DELETE",
     headers,
+    signal: options?.signal,
   });
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `Failed to clear review history: HTTP ${response.status}`);
+    const errorData = await response.json().catch(() => null);
+    throw new Error(
+      extractReviewerErrorMessage(errorData, `Failed to clear review history: HTTP ${response.status}`)
+    );
   }
 }
 

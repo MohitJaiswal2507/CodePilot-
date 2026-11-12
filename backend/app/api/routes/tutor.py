@@ -47,21 +47,20 @@ async def upload_pdf(
 
     filename = file.filename or "uploaded_document.pdf"
     
-    # Development diagnostic log (no secrets/tokens logged)
+    # Operational diagnostic log (no PII, tokens, or file contents)
     logger.info(
-        "DIAGNOSTIC: PDF upload initiated by user_id=%s (email=%s, role=%s) for file=%s",
+        "PDF upload initiated: user_id=%s, role=%s",
         owner_user_id,
-        current_user.email,
         current_user.role,
-        filename,
     )
     
     try:
         file_bytes = await file.read()
-    except Exception as exc:
+    except Exception:
+        logger.exception("Failed to read uploaded PDF for user_id=%s", owner_user_id)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to read uploaded file: {exc}"
+            detail="Failed to read uploaded file."
         )
 
     # 1. Validation
@@ -133,14 +132,14 @@ async def upload_pdf(
             document_id=doc_id,
             file_size_bytes=len(file_bytes),
         )
-    except Exception as store_err:
-        logger.error("Failed to index chunks for doc_id=%s, user_id=%s: %s", doc_id, owner_user_id, store_err)
+    except Exception:
+        logger.exception("Failed to index chunks for doc_id=%s, user_id=%s", doc_id, owner_user_id)
         doc_record.upload_status = "failed"
-        doc_record.processing_status = f"error: {str(store_err)[:100]}"
+        doc_record.processing_status = "error"
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to index document in vector store: {store_err}"
+            detail="Failed to index document in vector store."
         )
 
     # 7. Mark processing as completed
@@ -191,11 +190,10 @@ def list_documents(
             detail="Authenticated user ID is missing or invalid.",
         )
 
-    # Development diagnostic log
+    # Operational diagnostic log (no PII)
     logger.info(
-        "DIAGNOSTIC: list_documents requested by user_id=%s (email=%s)",
+        "list_documents requested: user_id=%s",
         owner_user_id,
-        current_user.email,
     )
 
     # Strict ownership query on PostgreSQL
@@ -377,10 +375,9 @@ def query_tutor(
         )
 
     logger.info(
-        "DIAGNOSTIC: query_tutor requested by user_id=%s, filter=%s, question_snippet='%s'",
+        "query_tutor requested: user_id=%s, filter=%s",
         owner_user_id,
         payload.document_filter,
-        payload.question[:60],
     )
 
     # Validate selected model if provided

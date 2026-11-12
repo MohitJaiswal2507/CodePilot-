@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import Editor from "@monaco-editor/react";
 import {
   Code2,
@@ -161,6 +161,17 @@ const MONACO_LANG_MAP: Record<SupportedLanguage, string> = {
   cpp: "cpp",
 };
 
+function isAbortError(err: unknown): boolean {
+  return (
+    (err instanceof DOMException && err.name === "AbortError") ||
+    (err instanceof Error && err.name === "AbortError")
+  );
+}
+
+function isSupportedLanguage(lang: string): lang is SupportedLanguage {
+  return lang === "python" || lang === "java" || lang === "cpp";
+}
+
 export function CodeReviewer() {
   const [language, setLanguage] = useState<SupportedLanguage>("python");
   const [code, setCode] = useState<string>(SAMPLE_CODES.python[0].code);
@@ -182,27 +193,106 @@ export function CodeReviewer() {
   // History state
   const [history, setHistory] = useState<CodeReviewHistoryItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyActionError, setHistoryActionError] = useState<string | null>(null);
+  const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(() => new Set());
   const [showHistoryDrawer, setShowHistoryDrawer] = useState(false);
 
-  // Load history on mount
-  useEffect(() => {
-    loadHistory();
+  // Lifecycle & concurrency refs
+  const isMountedRef = useRef(true);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reviewAbortRef = useRef<AbortController | null>(null);
+  const detailAbortRef = useRef<AbortController | null>(null);
+  const historyAbortRef = useRef<AbortController | null>(null);
+  const reviewRequestIdRef = useRef(0);
+  const detailRequestIdRef = useRef(0);
+  const historyRequestIdRef = useRef(0);
+  const deletedIdsRef = useRef<Set<string>>(new Set());
+
+  const invalidateActiveReview = useCallback(() => {
+    reviewRequestIdRef.current += 1;
+    if (reviewAbortRef.current) {
+      reviewAbortRef.current.abort();
+      reviewAbortRef.current = null;
+    }
+    if (isMountedRef.current) {
+      setIsSubmitting(false);
+    }
   }, []);
 
-  const loadHistory = async () => {
-    setIsLoadingHistory(true);
-    try {
-      const data = await fetchCodeReviewHistory(15, 0);
-      setHistory(data.reviews || []);
-    } catch (err) {
-      console.debug("Failed to load review history:", err);
-    } finally {
-      setIsLoadingHistory(false);
+  const loadHistory = useCallback(async () => {
+    historyRequestIdRef.current += 1;
+    const requestId = historyRequestIdRef.current;
+
+    if (historyAbortRef.current) {
+      historyAbortRef.current.abort();
     }
-  };
+    const controller = new AbortController();
+    historyAbortRef.current = controller;
+
+    if (isMountedRef.current) {
+      setIsLoadingHistory(true);
+      setHistoryError(null);
+    }
+
+    try {
+      const data = await fetchCodeReviewHistory(15, 0, { signal: controller.signal });
+      if (!isMountedRef.current || requestId !== historyRequestIdRef.current) {
+        return;
+      }
+      const filtered = (data.reviews || []).filter(
+        (item) => !deletedIdsRef.current.has(item.id)
+      );
+      setHistory(filtered);
+    } catch (err: unknown) {
+      if (isAbortError(err)) {
+        return;
+      }
+      if (isMountedRef.current && requestId === historyRequestIdRef.current) {
+        const msg = err instanceof Error ? err.message : "Failed to load review history.";
+        setHistoryError(msg);
+      }
+    } finally {
+      if (historyAbortRef.current === controller) {
+        historyAbortRef.current = null;
+      }
+      if (isMountedRef.current && requestId === historyRequestIdRef.current) {
+        setIsLoadingHistory(false);
+      }
+    }
+  }, []);
+
+  // Load history on mount & abort all pending reviewer requests/timers on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    loadHistory();
+
+    return () => {
+      isMountedRef.current = false;
+      if (reviewAbortRef.current) {
+        reviewAbortRef.current.abort();
+        reviewAbortRef.current = null;
+      }
+      if (detailAbortRef.current) {
+        detailAbortRef.current.abort();
+        detailAbortRef.current = null;
+      }
+      if (historyAbortRef.current) {
+        historyAbortRef.current.abort();
+        historyAbortRef.current = null;
+      }
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+        copyTimeoutRef.current = null;
+      }
+    };
+  }, [loadHistory]);
 
   const handleLanguageChange = (newLang: SupportedLanguage) => {
+    invalidateActiveReview();
     setLanguage(newLang);
+    setErrorMessage(null);
     // Suggest sample for the new language
     if (SAMPLE_CODES[newLang] && SAMPLE_CODES[newLang].length > 0) {
       setCode(SAMPLE_CODES[newLang][0].code);
@@ -210,11 +300,13 @@ export function CodeReviewer() {
   };
 
   const handleLoadSample = (sample: SampleCode) => {
+    invalidateActiveReview();
     setCode(sample.code);
     setErrorMessage(null);
   };
 
   const handleClear = () => {
+    invalidateActiveReview();
     setCode("");
     setErrorMessage(null);
   };
@@ -277,21 +369,50 @@ export function CodeReviewer() {
     }
   };
 
+  const handleCancelReview = () => {
+    invalidateActiveReview();
+  };
+
   const handleSubmitReview = async () => {
+    if (isSubmitting) return;
     const trimmed = code.trim();
     if (!trimmed) {
       setErrorMessage("Please enter some code to submit for review.");
       return;
     }
+    if (trimmed.length < 2) {
+      setErrorMessage("Please enter at least 2 characters of code before submitting for review.");
+      return;
+    }
+    if (trimmed.length > 50000) {
+      setErrorMessage("Code exceeds the 50,000-character limit for AI code review.");
+      return;
+    }
+
+    reviewRequestIdRef.current += 1;
+    const requestId = reviewRequestIdRef.current;
+
+    if (reviewAbortRef.current) {
+      reviewAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    reviewAbortRef.current = controller;
 
     setIsSubmitting(true);
     setErrorMessage(null);
 
     try {
-      const response: CodeReviewResponse = await submitCodeReview({
-        code: trimmed,
-        language,
-      });
+      const response: CodeReviewResponse = await submitCodeReview(
+        {
+          code: trimmed,
+          language,
+        },
+        { signal: controller.signal }
+      );
+
+      if (!isMountedRef.current || requestId !== reviewRequestIdRef.current) {
+        return;
+      }
 
       setReviewResult(response.review);
       setActiveReviewId(response.id);
@@ -299,38 +420,101 @@ export function CodeReviewer() {
       // Refresh history
       loadHistory();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to review code. Please try again.";
-      setErrorMessage(msg);
+      if (isAbortError(err)) {
+        return;
+      }
+      if (isMountedRef.current && requestId === reviewRequestIdRef.current) {
+        const msg = err instanceof Error ? err.message : "Failed to review code. Please try again.";
+        setErrorMessage(msg);
+      }
     } finally {
-      setIsSubmitting(false);
+      if (reviewAbortRef.current === controller) {
+        reviewAbortRef.current = null;
+      }
+      if (isMountedRef.current && requestId === reviewRequestIdRef.current) {
+        setIsSubmitting(false);
+      }
     }
   };
 
   const handleSelectHistoryItem = async (item: CodeReviewHistoryItem) => {
+    invalidateActiveReview();
+    detailRequestIdRef.current += 1;
+    const requestId = detailRequestIdRef.current;
+
+    if (detailAbortRef.current) {
+      detailAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    detailAbortRef.current = controller;
+
+    setIsLoadingDetail(true);
+    setHistoryActionError(null);
+
     try {
-      const detail = await fetchCodeReviewDetail(item.id);
+      const detail = await fetchCodeReviewDetail(item.id, { signal: controller.signal });
+      if (!isMountedRef.current || requestId !== detailRequestIdRef.current) {
+        return;
+      }
       setReviewResult(detail.review);
       setActiveReviewId(detail.id);
       setCode(detail.submitted_code);
-      setLanguage(detail.language as SupportedLanguage);
+      if (isSupportedLanguage(detail.language)) {
+        setLanguage(detail.language);
+      }
+      setErrorMessage(null);
       setShowHistoryDrawer(false);
       setActiveTab("overview");
-    } catch (err) {
-      console.error("Failed to load review detail:", err);
+    } catch (err: unknown) {
+      if (isAbortError(err)) {
+        return;
+      }
+      if (isMountedRef.current && requestId === detailRequestIdRef.current) {
+        const msg = err instanceof Error ? err.message : "Failed to load review details.";
+        setHistoryActionError(msg);
+      }
+    } finally {
+      if (detailAbortRef.current === controller) {
+        detailAbortRef.current = null;
+      }
+      if (isMountedRef.current && requestId === detailRequestIdRef.current) {
+        setIsLoadingDetail(false);
+      }
     }
   };
 
   const handleDeleteHistoryItem = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    if (deletingIds.has(id)) return;
+
+    deletedIdsRef.current.add(id);
+    setDeletingIds((prev) => new Set(prev).add(id));
+    setHistoryActionError(null);
+
     try {
       await deleteCodeReview(id);
+      if (!isMountedRef.current) {
+        return;
+      }
       setHistory((prev) => prev.filter((item) => item.id !== id));
       if (activeReviewId === id) {
         setReviewResult(null);
         setActiveReviewId(null);
       }
-    } catch (err) {
-      console.error("Failed to delete review:", err);
+    } catch (err: unknown) {
+      deletedIdsRef.current.delete(id);
+      if (isMountedRef.current) {
+        const msg = err instanceof Error ? err.message : "Failed to delete review.";
+        setHistoryActionError(msg);
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setDeletingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
     }
   };
 
@@ -338,7 +522,15 @@ export function CodeReviewer() {
     if (!reviewResult?.corrected_code) return;
     navigator.clipboard.writeText(reviewResult.corrected_code);
     setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2000);
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+    }
+    copyTimeoutRef.current = setTimeout(() => {
+      copyTimeoutRef.current = null;
+      if (isMountedRef.current) {
+        setCopiedCode(false);
+      }
+    }, 2000);
   };
 
   const getAssessmentBadge = (assessment: string, score: number) => {
@@ -586,6 +778,17 @@ export function CodeReviewer() {
                     </>
                   )}
                 </button>
+
+                {isSubmitting && (
+                  <button
+                    onClick={handleCancelReview}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-medium text-xs transition-colors cursor-pointer"
+                    title="Cancel in-progress code review"
+                  >
+                    <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Cancel</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -658,7 +861,7 @@ export function CodeReviewer() {
                   Python AST syntax check
                 </span>
                 <span className="text-[10px] px-2.5 py-1 rounded bg-slate-900 border border-slate-800 text-slate-400 font-mono">
-                  Big-O proof
+                  Estimated Big-O
                 </span>
                 <span className="text-[10px] px-2.5 py-1 rounded bg-slate-900 border border-slate-800 text-slate-400 font-mono">
                   6-factor edge cases
@@ -766,7 +969,7 @@ export function CodeReviewer() {
                       : "border-transparent text-slate-400 hover:text-slate-200"
                   }`}
                 >
-                  Complexity Proof
+                  Estimated Complexity
                 </button>
                 <button
                   onClick={() => setActiveTab("edge_cases")}
@@ -812,7 +1015,7 @@ export function CodeReviewer() {
                       <div className="p-3.5 rounded-xl bg-slate-900/40 border border-slate-800/80 flex items-start gap-2.5 text-xs text-slate-400">
                         <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                         <div>
-                          <span className="font-semibold text-slate-300">Static AST Inspection:</span>{" "}
+                          <span className="font-semibold text-slate-300">Static Code Inspection:</span>{" "}
                           <span>{reviewResult.static_analysis_notes}</span>
                         </div>
                       </div>
@@ -1241,10 +1444,29 @@ export function CodeReviewer() {
                 </button>
               </div>
 
+              {historyActionError && (
+                <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 flex items-start gap-2 text-xs text-rose-300">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                  <span>{historyActionError}</span>
+                </div>
+              )}
+
               {isLoadingHistory ? (
                 <div className="py-12 text-center text-slate-400 text-xs flex items-center justify-center gap-2">
                   <RefreshCw className="w-4 h-4 animate-spin" />
                   <span>Loading past reviews...</span>
+                </div>
+              ) : historyError ? (
+                <div className="py-10 px-4 text-center space-y-3 rounded-xl bg-rose-500/10 border border-rose-500/20">
+                  <AlertCircle className="w-5 h-5 text-rose-400 mx-auto" />
+                  <p className="text-xs text-rose-200">{historyError}</p>
+                  <button
+                    onClick={loadHistory}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700 transition-colors cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Retry</span>
+                  </button>
                 </div>
               ) : history.length === 0 ? (
                 <div className="py-12 text-center text-slate-400 text-xs">
@@ -1253,38 +1475,46 @@ export function CodeReviewer() {
                 </div>
               ) : (
                 <div className="space-y-2.5 overflow-y-auto max-h-[75vh] pr-1">
-                  {history.map((item) => (
-                    <div
-                      key={item.id}
-                      onClick={() => handleSelectHistoryItem(item)}
-                      className={`p-3 rounded-xl border transition-all cursor-pointer ${
-                        activeReviewId === item.id
-                          ? "bg-indigo-950/20 border-indigo-500/40"
-                          : "bg-slate-900/60 border-slate-800/80 hover:border-slate-700"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between text-xs mb-1.5">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 uppercase">
-                            {item.language}
-                          </span>
-                          <span className="text-[11px] font-semibold text-white">
-                            Score: {item.quality_score}/10
-                          </span>
+                  {history.map((item) => {
+                    const isDeleting = deletingIds.has(item.id);
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => {
+                          if (!isDeleting) handleSelectHistoryItem(item);
+                        }}
+                        className={`p-3 rounded-xl border transition-all ${
+                          isDeleting || isLoadingDetail ? "opacity-70" : "cursor-pointer"
+                        } ${
+                          activeReviewId === item.id
+                            ? "bg-indigo-950/20 border-indigo-500/40"
+                            : "bg-slate-900/60 border-slate-800/80 hover:border-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between text-xs mb-1.5">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 uppercase">
+                              {item.language}
+                            </span>
+                            <span className="text-[11px] font-semibold text-white">
+                              Score: {item.quality_score}/10
+                            </span>
+                          </div>
+                          <button
+                            onClick={(e) => handleDeleteHistoryItem(e, item.id)}
+                            disabled={isDeleting}
+                            className="text-slate-500 hover:text-rose-400 disabled:opacity-40 p-1 transition-colors cursor-pointer disabled:cursor-not-allowed"
+                            title={isDeleting ? "Deleting..." : "Delete review"}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
-                        <button
-                          onClick={(e) => handleDeleteHistoryItem(e, item.id)}
-                          className="text-slate-500 hover:text-rose-400 p-1 transition-colors"
-                          title="Delete review"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
 
-                      <p className="text-xs text-slate-300 font-mono truncate">{item.code_snippet}</p>
-                      <p className="text-[11px] text-slate-400 mt-1 line-clamp-1">{item.summary}</p>
-                    </div>
-                  ))}
+                        <p className="text-xs text-slate-300 font-mono truncate">{item.code_snippet}</p>
+                        <p className="text-[11px] text-slate-400 mt-1 line-clamp-1">{item.summary}</p>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

@@ -572,13 +572,10 @@ def answer_question_with_trace(
                 raw_err_tel if isinstance(raw_err_tel, LLMGenerationResult) else None
             )
             logger.error("Error communicating with AI model (%s): %s", active_model, err, exc_info=True)
-            error_msg = str(err).strip()
-            if not error_msg or "Traceback" in error_msg:
-                error_msg = f"An error occurred while communicating with model '{active_model}'. Please try again."
             # IMPORTANT: Preserve filtered context chunks and NEVER mark as insufficient context on API failure
             citations = build_citations(context_chunks)
             response = QueryResponse(
-                answer=f"Error communicating with AI model: {error_msg}",
+                answer="Error communicating with AI model. Please try again later.",
                 citations=citations,
                 insufficient_context=False, # Never convert API error to insufficient context!
                 retrieved_chunks_count=len(context_chunks),
