@@ -322,3 +322,251 @@ def test_cross_user_code_review_isolation(mock_review_exec, clean_reviews):
     del_a = client.delete(f"/api/reviewer/{review_a_id}", headers=headers_a)
     assert del_a.status_code == 200
 
+
+@patch("app.api.routes.reviewer.execute_code_review")
+def test_review_graph_exception_returns_sanitized_500_without_leaking_details(mock_review_exec, caplog):
+    mock_review_exec.side_effect = RuntimeError(
+        r"Gemini SDK failure reading C:\Users\secret\.env at https://internal.db.local/api?key=LEAKED_KEY"
+    )
+    token = generate_test_jwt("reviewer_user_alice")
+
+    with caplog.at_level("ERROR", logger="app.api.routes.reviewer"):
+        res = client.post(
+            "/api/reviewer/review",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"code": "def SECRET_USER_FN():\n    return 42\n", "language": "python"},
+        )
+
+    assert res.status_code == 500
+    assert res.json()["detail"] == "Failed to complete code review due to an unexpected internal error."
+    for sensitive in ("C:\\Users", ".env", "internal.db.local", "LEAKED_KEY", "SECRET_USER_FN"):
+        assert sensitive not in res.text
+
+    # Diagnostic detail logged server-side, without submitted source code
+    assert any("Code review execution failed" in rec.message for rec in caplog.records)
+    assert all("SECRET_USER_FN" not in rec.getMessage() for rec in caplog.records)
+
+
+@patch("app.api.routes.reviewer.execute_code_review")
+def test_review_db_commit_failure_triggers_rollback_and_returns_sanitized_500(mock_review_exec, clean_reviews):
+    from sqlalchemy.orm import Session
+    from app.schemas.reviewer import CodeReviewResult
+
+    mock_review_exec.return_value = CodeReviewResult.model_validate({
+        "summary": "Valid addition function.",
+        "overall_assessment": "excellent",
+        "quality_score": 10,
+        "detected_issues": [],
+        "edge_cases": [],
+        "complexity": {
+            "time_complexity": "O(1)",
+            "time_reasoning": "Constant time operation.",
+            "space_complexity": "O(1)",
+            "space_reasoning": "No extra memory allocated.",
+        },
+        "improvement_suggestions": [],
+        "corrected_code": None,
+        "explanation_of_changes": None,
+        "static_analysis_notes": "Static syntax verification passed.",
+    })
+
+    token = generate_test_jwt("reviewer_user_alice")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    orig_rollback = Session.rollback
+    with patch.object(
+        Session,
+        "commit",
+        side_effect=RuntimeError("postgresql://admin:db_secret@neon.internal:5432/neondb commit failed"),
+    ), patch.object(
+        Session,
+        "rollback",
+        autospec=True,
+        side_effect=orig_rollback,
+    ) as mock_rollback:
+        res = client.post(
+            "/api/reviewer/review",
+            headers=headers,
+            json={"code": "def add(a, b):\n    return a + b\n", "language": "python"},
+        )
+
+    assert res.status_code == 500
+    assert res.json()["detail"] == "Failed to save code review due to an internal error."
+    mock_rollback.assert_called_once()
+    for sensitive in ("postgresql://", "db_secret", "neon.internal", "neondb", "commit failed"):
+        assert sensitive not in res.text
+
+    # Verify DB session remains healthy for subsequent reads
+    hist_res = client.get("/api/reviewer/history", headers=headers)
+    assert hist_res.status_code == 200
+    assert hist_res.json()["total"] == 0
+
+
+# -----------------------------------------------------------------------------
+# 4. Malformed Gemini JSON & Unexpected Shape Normalization Tests (M-2)
+# -----------------------------------------------------------------------------
+@pytest.mark.parametrize("bad_output", [
+    '{"summary": "truncated',
+    "",
+    "   \n\t  ",
+    "[]",
+    "null",
+    '"hello"',
+    "42",
+    "true",
+])
+def test_malformed_empty_and_non_dict_json_uses_honest_fallback(bad_output, caplog):
+    secret_code = "def SECRET_SHOULD_NOT_LOG():\n    return 1\n"
+    with caplog.at_level("WARNING", logger="app.services.review_graph"), \
+         patch("app.services.review_graph.record_llm_telemetry") as mock_tel:
+        result = execute_code_review(
+            code=secret_code,
+            language="python",
+            user_id="user_m2",
+            llm_callable=lambda _p: bad_output,
+        )
+
+    assert result.overall_assessment == "needs_improvement"
+    assert result.quality_score == 5
+    assert result.corrected_code is None
+    assert result.complexity.time_complexity == "N/A"
+    assert result.complexity.space_complexity == "N/A"
+    assert "could not be verified" in result.complexity.time_reasoning.lower()
+    assert "could not be verified" in result.complexity.space_reasoning.lower()
+    assert len(result.edge_cases) >= 1  # Deterministic edge cases synthesized
+
+    mock_tel.assert_called_once()
+    tel_event = mock_tel.call_args[0][0]
+    assert tel_event.event_type == "json_parse_fallback"
+    assert tel_event.error_category == "json_parse_error"
+    assert tel_event.parse_fallback is True
+    assert all("SECRET_SHOULD_NOT_LOG" not in rec.getMessage() for rec in caplog.records)
+
+
+def test_prose_wrapped_uppercase_fenced_json_is_extracted():
+    wrapped = (
+        "Here is my detailed code review:\n"
+        "```JSON\n"
+        + json.dumps({
+            "summary": "Clean binary search implementation.",
+            "overall_assessment": "good",
+            "quality_score": 8,
+            "detected_issues": [],
+            "edge_cases": [
+                {"category": "Boundary", "scenario": "Empty list", "behavior": "Returns -1", "handled": True}
+            ],
+            "complexity": {
+                "time_complexity": "O(log n)",
+                "time_reasoning": "Halves search interval per iteration.",
+                "space_complexity": "O(1)",
+                "space_reasoning": "Uses constant pointers.",
+            },
+            "improvement_suggestions": ["Add type annotations."],
+            "corrected_code": "def f(a):\n    return a\n",
+            "explanation_of_changes": "Added annotations.",
+        })
+        + "\n```\nLet me know if you want another pass."
+    )
+
+    result = execute_code_review(
+        code="def f(a):\n    return a\n",
+        language="python",
+        user_id="user_m2",
+        llm_callable=lambda _p: wrapped,
+    )
+    assert result.overall_assessment == "good"
+    assert result.quality_score == 8
+    assert result.complexity.time_complexity == "O(log n)"
+    assert result.summary == "Clean binary search implementation."
+
+
+def test_missing_extra_null_and_wrong_field_types_are_safely_normalized():
+    # Case 1: Empty JSON object + extra fields
+    res_empty_obj = execute_code_review(
+        code="def solve(x):\n    return x\n",
+        language="python",
+        user_id="user_m2",
+        llm_callable=lambda _p: json.dumps({"extra_unknown_field": {"nested": [1, 2]}}),
+    )
+    assert res_empty_obj.summary == "Code review completed."
+    assert res_empty_obj.complexity.time_complexity == "N/A"
+    assert res_empty_obj.complexity.space_complexity == "N/A"
+    assert len(res_empty_obj.edge_cases) >= 1
+
+    # Case 2: Null scalar fields, wrong container types, mixed invalid list items
+    chaotic_payload = {
+        "summary": None,
+        "overall_assessment": None,
+        "quality_score": True,  # bool must not pass as int score 1
+        "detected_issues": [
+            None,
+            "plain string issue",
+            {},
+            {"message": "   "},
+            {"type": "bug", "severity": "high", "message": "Off-by-one bug", "line_number": True, "suggestion": 123},
+        ],
+        "edge_cases": "should trigger generator",
+        "complexity": "O(n)",
+        "improvement_suggestions": "Convert single string into one-item list.",
+        "corrected_code": ["not", "a", "string"],
+        "explanation_of_changes": {"nested": "dict"},
+        "extra_field": "ignored",
+    }
+    res_chaotic = execute_code_review(
+        code="def solve(x):\n    return x\n",
+        language="python",
+        user_id="user_m2",
+        llm_callable=lambda _p: json.dumps(chaotic_payload),
+    )
+    assert res_chaotic.summary == "Code review completed."
+    assert res_chaotic.overall_assessment == "needs_improvement"
+    assert res_chaotic.quality_score == 5
+    assert len(res_chaotic.detected_issues) == 1
+    assert res_chaotic.detected_issues[0].message == "Off-by-one bug"
+    assert res_chaotic.detected_issues[0].line_number is None
+    assert res_chaotic.detected_issues[0].suggestion is None
+    assert len(res_chaotic.edge_cases) >= 1  # Synthesized cleanly
+    assert res_chaotic.complexity.time_complexity == "N/A"
+    assert res_chaotic.complexity.space_complexity == "N/A"
+    assert res_chaotic.improvement_suggestions == ["Convert single string into one-item list."]
+    assert res_chaotic.corrected_code is None
+    assert res_chaotic.explanation_of_changes is None
+
+    # Case 3: Wrong top-level detected_issues container, null complexity subfields, mixed list elements
+    payload_3 = {
+        "summary": "Partial output",
+        "detected_issues": "none",
+        "edge_cases": [None, "invalid", {"foo": "bar"}, {"scenario": "Null input", "behavior": "Raises ValueError", "handled": False}],
+        "complexity": {
+            "time_complexity": "O(n log n)",
+            "time_reasoning": None,
+            "space_complexity": None,
+            "space_reasoning": 42,
+        },
+        "improvement_suggestions": ["Valid tip", None, 99, "  "],
+    }
+    res_3 = execute_code_review(
+        code="def solve(x):\n    return x\n",
+        language="python",
+        user_id="user_m2",
+        llm_callable=lambda _p: json.dumps(payload_3),
+    )
+    assert res_3.detected_issues == []
+    assert len(res_3.edge_cases) == 1
+    assert res_3.edge_cases[0].scenario == "Null input"
+    assert res_3.complexity.time_complexity == "O(n log n)"
+    assert "could not be verified" in res_3.complexity.time_reasoning.lower()
+    assert res_3.complexity.space_complexity == "N/A"
+    assert res_3.improvement_suggestions == ["Valid tip"]
+
+
+@patch("app.services.review_graph.generate_text")
+def test_gateway_infrastructure_error_still_propagates(mock_generate_text):
+    mock_generate_text.side_effect = RuntimeError("Gemini API request timed out after 120000ms")
+    with pytest.raises(RuntimeError, match="timed out"):
+        execute_code_review(
+            code="def add(a, b):\n    return a + b\n",
+            language="python",
+            user_id="user_m2",
+        )
+

@@ -22,6 +22,27 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/reviewer", tags=["AI Code Reviewer"])
 
+
+def _commit_db_write(
+    db: Session,
+    *,
+    action: str,
+    owner_user_id: str,
+    client_detail: str,
+) -> None:
+    """Commit a database write with explicit rollback and sanitized 500 error handling."""
+    try:
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception("Database persistence failed during %s for user_id=%s", action, owner_user_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=client_detail,
+        )
+
 @router.post("/review", response_model=CodeReviewResponse, status_code=status.HTTP_201_CREATED)
 def submit_code_review(
     payload: ReviewCodeRequest,
@@ -85,26 +106,52 @@ def submit_code_review(
             user_id=owner_user_id,
             model=active_model,
         )
-    except Exception as exc:
-        logger.error("Code review execution failed for user_id=%s: %s", owner_user_id, exc)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(
+            "Code review execution failed for user_id=%s, language=%s, model=%s",
+            owner_user_id,
+            language,
+            active_model,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to complete code review: {str(exc)}",
+            detail="Failed to complete code review due to an unexpected internal error.",
         )
 
     # Persist in PostgreSQL
     review_id = str(uuid.uuid4())
-    db_record = CodeReview(
-        id=review_id,
-        owner_user_id=owner_user_id,
-        language=language,
-        submitted_code=code,
-        structured_result=review_result.model_dump(),
-        model_used=active_model,
-    )
-    db.add(db_record)
-    db.commit()
-    db.refresh(db_record)
+    try:
+        db_record = CodeReview(
+            id=review_id,
+            owner_user_id=owner_user_id,
+            language=language,
+            submitted_code=code,
+            structured_result=review_result.model_dump(),
+            model_used=active_model,
+        )
+        db.add(db_record)
+        _commit_db_write(
+            db,
+            action="submit_code_review",
+            owner_user_id=owner_user_id,
+            client_detail="Failed to save code review due to an internal error.",
+        )
+        db.refresh(db_record)
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Code review persistence failed for user_id=%s, review_id=%s",
+            owner_user_id,
+            review_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save code review due to an internal error.",
+        )
 
     logger.info(
         "DIAGNOSTIC: Code review completed and persisted: review_id=%s, user_id=%s, score=%d/10",
@@ -241,7 +288,12 @@ def delete_code_review(
         )
 
     db.delete(record)
-    db.commit()
+    _commit_db_write(
+        db,
+        action="delete_code_review",
+        owner_user_id=owner_user_id,
+        client_detail="Failed to delete code review due to an internal error.",
+    )
 
     return {
         "status": "success",
@@ -269,7 +321,12 @@ def clear_code_review_history(
         .filter(CodeReview.owner_user_id == owner_user_id)
         .delete()
     )
-    db.commit()
+    _commit_db_write(
+        db,
+        action="clear_code_review_history",
+        owner_user_id=owner_user_id,
+        client_detail="Failed to clear code review history due to an internal error.",
+    )
 
     return {
         "status": "success",

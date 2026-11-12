@@ -2,15 +2,57 @@ import logging
 import os
 import re
 import time
-import random
-from typing import List, Dict, Any, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Sequence, Tuple
 from google import genai
-from google.genai import types
 from app.core.config import settings
 from app.schemas.tutor import Citation, QueryResponse, ChatMessage
 from app.services.vector_store import VectorStoreService
+from app.services.llm_gateway import (
+    LLMGenerationResult,
+    generate_text,
+    is_quota_exhausted_error,
+    is_transient_rate_limit_error,
+    extract_retry_delay_seconds,
+)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RAGTrace:
+    """
+    Internal trace capturing raw retrieval metadata, filtered LLM context chunks,
+    gating decisions, and gateway telemetry without modifying QueryResponse schemas.
+    """
+
+    standalone_query: str
+    retrieved_chunks: List[Dict[str, Any]] = field(default_factory=list)
+    context_chunks: Optional[List[Dict[str, Any]]] = None
+    max_similarity: float = 0.0
+    threshold_triggered: bool = False
+    clarification_triggered: bool = False
+    rewriter_telemetry: Optional[LLMGenerationResult] = None
+    generation_telemetry: Optional[LLMGenerationResult] = None
+
+
+# Per-task telemetry collector so `call_gemini` preserves its `str` signature and patchability
+_llm_trace_slot: ContextVar[Optional[Dict[str, Optional[LLMGenerationResult]]]] = ContextVar(
+    "_llm_trace_slot",
+    default=None,
+)
+
+
+@contextmanager
+def _capture_llm_telemetry():
+    slot: Dict[str, Optional[LLMGenerationResult]] = {"result": None}
+    token = _llm_trace_slot.set(slot)
+    try:
+        yield slot
+    finally:
+        _llm_trace_slot.reset(token)
 
 # Base system prompt enforcing curriculum grounding, conversational awareness, and prompt injection defense
 SYSTEM_PROMPT = """You are CodePilot AI, a computer science learning tutor.
@@ -42,6 +84,92 @@ Given the student's latest question:
    CLARIFY: Could you clarify which programming concept or topic you are referring to?
 5. OUTPUT: Output ONLY the standalone search query (or CLARIFY: ...). Do NOT answer the question. Do NOT include quotation marks, brackets, or conversational preamble.
 """
+
+def _safe_similarity(chunk: Dict[str, Any]) -> Optional[float]:
+    val = chunk.get("similarity")
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        return None
+    return num if num == num else None
+
+
+def _context_chunk_dedup_key(chunk: Dict[str, Any]) -> Tuple[Any, ...]:
+    cid = chunk.get("chunk_id")
+    if isinstance(cid, str) and cid.strip():
+        return ("chunk_id", cid.strip())
+    doc = str(chunk.get("document_name", "")).strip().lower()
+    page = int(chunk.get("page_number", 0) or 0)
+    if chunk.get("chunk_index") is not None:
+        return ("doc_page_idx", doc, page, int(chunk["chunk_index"]))
+    return ("doc_page_text", doc, page, str(chunk.get("text", "")).strip())
+
+
+def filter_context_chunks(
+    retrieved_chunks: Sequence[Dict[str, Any]],
+    secondary_threshold: Optional[float] = None,
+    max_score_gap: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Filter and deduplicate retrieved chunks before building LLM prompt context.
+
+    - Sorts descending by similarity so unsorted mocks are handled safely.
+    - Deduplicates by chunk_id, falling back to (document_name, page_number, chunk_index/text).
+    - Always retains the highest-scoring chunk.
+    - Retains lower-ranked chunks only when they meet `secondary_threshold` and (when
+      `max_score_gap > 0`) stay within `max_score_gap` below the top similarity score.
+    """
+    if not retrieved_chunks:
+        return []
+
+    sec_thresh = (
+        float(getattr(settings, "SECONDARY_SIMILARITY_THRESHOLD", 0.35))
+        if secondary_threshold is None
+        else float(secondary_threshold)
+    )
+    score_gap = (
+        float(getattr(settings, "RETRIEVAL_SCORE_GAP", 0.25))
+        if max_score_gap is None
+        else float(max_score_gap)
+    )
+
+    indexed_sorted = sorted(
+        enumerate(retrieved_chunks),
+        key=lambda item: (
+            _safe_similarity(item[1]) is not None,
+            _safe_similarity(item[1]) if _safe_similarity(item[1]) is not None else float("-inf"),
+            -item[0],
+        ),
+        reverse=True,
+    )
+
+    seen_keys: set[Tuple[Any, ...]] = set()
+    unique_chunks: List[Dict[str, Any]] = []
+    for _, chunk in indexed_sorted:
+        key = _context_chunk_dedup_key(chunk)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            unique_chunks.append(chunk)
+
+    top_chunk = unique_chunks[0]
+    top_sim = _safe_similarity(top_chunk)
+    max_sim = top_sim if top_sim is not None else 0.0
+
+    filtered: List[Dict[str, Any]] = [top_chunk]
+    for chunk in unique_chunks[1:]:
+        sim = _safe_similarity(chunk)
+        if sim is None:
+            continue
+        if sim < sec_thresh:
+            continue
+        if score_gap > 0 and sim < (max_sim - score_gap):
+            continue
+        filtered.append(chunk)
+
+    return filtered
+
 
 def build_context_block(retrieved_chunks: List[Dict[str, Any]]) -> str:
     """Format retrieved chunks into XML-delimited untrusted context."""
@@ -164,48 +292,8 @@ def extract_and_prioritize_citations(
     return supported_citations
 
 # -----------------------------------------------------------------------------
-# Rate-limit, Quota & Error Classification Helpers
+# Query Rewriting & Shared Gemini Gateway Delegation
 # -----------------------------------------------------------------------------
-def is_quota_exhausted_error(err: Optional[Exception]) -> bool:
-    """Identify whether an error represents exhausted quota (daily / plan limit) vs transient rate limit."""
-    if not err:
-        return False
-    err_str = str(err).lower()
-    quota_indicators = [
-        "quota exceeded", "quota_exceeded", "per day", "daily",
-        "free_tier_requests", "exceeded your current quota", "plan and billing"
-    ]
-    return any(phrase in err_str for phrase in quota_indicators)
-
-def is_transient_rate_limit_error(err: Optional[Exception]) -> bool:
-    """Identify if an error is a retryable transient rate limit (429) or temporary server unavailability (503)."""
-    if not err:
-        return False
-    err_str = str(err).lower()
-    is_429 = any(phrase in err_str for phrase in ["429", "resource_exhausted", "too many requests", "rate limit"])
-    return is_429 and not is_quota_exhausted_error(err)
-
-def extract_retry_delay_seconds(err: Exception) -> Optional[float]:
-    """Extract Retry-After or retryDelay from exception if provided by provider."""
-    err_str = str(err)
-    # Check for retryDelay in details: e.g. 'retryDelay': '3s'
-    match_delay = re.search(r"['\"]retryDelay['\"]\s*:\s*['\"](\d+(?:\.\d+)?)s?['\"]", err_str)
-    if match_delay:
-        try:
-            return float(match_delay.group(1))
-        except ValueError:
-            pass
-
-    # Check for text like "retry in 3.5s"
-    match_text = re.search(r"retry in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
-    if match_text:
-        try:
-            return float(match_text.group(1))
-        except ValueError:
-            pass
-
-    return None
-
 def rewrite_query(
     question: str,
     history: List[ChatMessage],
@@ -245,6 +333,7 @@ Standalone search query:"""
                 system_instruction=REWRITE_SYSTEM_PROMPT,
                 model=settings.GEMINI_REWRITE_MODEL,
                 allow_fallback=True,
+                feature="rag_rewrite",
             )
 
         rewritten = rewritten.strip().strip('"').strip("'")
@@ -263,117 +352,279 @@ def call_gemini(
     max_retries: int = 3,
     sleep_fn = time.sleep,
     allow_fallback: bool = False,
+    feature: str = "rag_answer",
 ) -> str:
     """
-    Invoke Gemini API using Google's official google-genai SDK.
-    Includes limited exponential backoff for transient rate limits (429/503),
-    respects retryDelay when <= 15s.
-    If allow_fallback is True, falls back to secondary supported models on total failure.
-    If allow_fallback is False (default when model is selected), strictly queries
-    the target model and returns clear model-specific errors without silent switching.
+    Invoke Gemini API via the centralized LLM gateway (`llm_gateway.generate_text`).
+    Preserves exact function signature, mock client injection, retry/backoff, and fallback behavior.
     """
-    api_key = settings.GEMINI_API_KEY.strip()
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not configured.")
+    try:
+        result = generate_text(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            model=model,
+            temperature=0.2,
+            feature=feature,
+            client=client,
+            max_retries=max_retries,
+            sleep_fn=sleep_fn,
+            allow_fallback=allow_fallback,
+        )
+    except Exception as exc:
+        slot = _llm_trace_slot.get()
+        if slot is not None:
+            failure_result = getattr(exc, "telemetry_result", None)
+            if isinstance(failure_result, LLMGenerationResult):
+                slot["result"] = failure_result
+        raise
+    slot = _llm_trace_slot.get()
+    if slot is not None:
+        slot["result"] = result
+    return result.text
 
-    model_name = (model or settings.GEMINI_MODEL or "gemini-3.5-flash-lite").strip()
-    if model_name.startswith("models/"):
-        model_name = model_name[len("models/"):]
+def answer_question_with_trace(
+    question: str,
+    user_id: Optional[str] = None,
+    vector_store: Optional[VectorStoreService] = None,
+    document_filter: Optional[str] = None,
+    top_k: int = 4,
+    history: Optional[List[ChatMessage]] = None,
+    llm_callable = None,
+    rewrite_callable = None,
+    model: Optional[str] = None,
+) -> Tuple[QueryResponse, RAGTrace]:
+    """
+    Internal traced version of `answer_question` returning `(QueryResponse, RAGTrace)`.
+    Captures retrieval chunks, similarity threshold decisions, clarification flags,
+    and Gemini gateway telemetry without modifying public API responses.
+    """
+    clean_user_id = str(user_id).strip() if user_id else ""
+    if not clean_user_id:
+        if settings.ENVIRONMENT == "test" and settings.ALLOW_DEV_FALLBACK_AUTH:
+            clean_user_id = "test_default_user_1"
+        else:
+            raise ValueError("user_id is strictly required for grounded RAG retrieval to prevent cross-account data leakage")
 
-    ai_client = client or genai.Client(api_key=api_key)
-    config = types.GenerateContentConfig(
-        system_instruction=system_instruction,
-        temperature=0.2,
+    chat_history = history or []
+    active_model = (model or settings.GEMINI_MODEL or "gemini-3.5-flash-lite").strip()
+    if active_model.startswith("models/"):
+        active_model = active_model[len("models/"):]
+
+    # 1. Standalone Query Rewriting
+    standalone_query = question
+    rewriter_telemetry: Optional[LLMGenerationResult] = None
+    if chat_history:
+        with _capture_llm_telemetry() as rewrite_slot:
+            standalone_query = rewrite_query(
+                question=question,
+                history=chat_history,
+                llm_callable=rewrite_callable,
+            )
+            rewriter_telemetry = rewrite_slot["result"]
+
+    # 2. Check if the rewriter requested clarification for genuine ambiguity
+    if standalone_query.startswith("CLARIFY:"):
+        clarification_msg = standalone_query[len("CLARIFY:"):].strip()
+        response = QueryResponse(
+            answer=clarification_msg or "Could you clarify which programming concept or topic you are referring to?",
+            citations=[],
+            insufficient_context=False,
+            retrieved_chunks_count=0,
+            standalone_query=standalone_query,
+            is_error=False,
+            model_used=active_model,
+        )
+        trace = RAGTrace(
+            standalone_query=standalone_query,
+            retrieved_chunks=[],
+            context_chunks=[],
+            max_similarity=0.0,
+            threshold_triggered=False,
+            clarification_triggered=True,
+            rewriter_telemetry=rewriter_telemetry,
+            generation_telemetry=None,
+        )
+        return response, trace
+
+    # 3. Fresh Vector Retrieval using the standalone query with strict user ownership filter
+    store = vector_store or VectorStoreService.get_instance()
+    try:
+        retrieved_chunks = store.similarity_search(
+            query=standalone_query,
+            user_id=clean_user_id,
+            top_k=top_k,
+            document_filter=document_filter,
+        )
+    except TypeError:
+        # Fallback for custom test mock stores that don't accept user_id
+        retrieved_chunks = store.similarity_search(
+            query=standalone_query,
+            top_k=top_k,
+            document_filter=document_filter,
+        )
+
+    # 4. Check for empty context
+    if not retrieved_chunks:
+        response = QueryResponse(
+            answer="I cannot find sufficient evidence in the uploaded learning materials to answer this question. Please upload relevant course materials or adjust your query.",
+            citations=[],
+            insufficient_context=True,
+            retrieved_chunks_count=0,
+            standalone_query=standalone_query,
+            is_error=False,
+            model_used=active_model,
+        )
+        trace = RAGTrace(
+            standalone_query=standalone_query,
+            retrieved_chunks=[],
+            context_chunks=[],
+            max_similarity=0.0,
+            threshold_triggered=False,
+            clarification_triggered=False,
+            rewriter_telemetry=rewriter_telemetry,
+            generation_telemetry=None,
+        )
+        return response, trace
+
+    # 5. Check maximum similarity against threshold
+    max_similarity = max((_safe_similarity(c) or 0.0 for c in retrieved_chunks), default=0.0)
+    if max_similarity < settings.SIMILARITY_THRESHOLD:
+        response = QueryResponse(
+            answer="I cannot find sufficient evidence in the uploaded learning materials to answer this question accurately. The closest retrieved passages have low relevance to your query.",
+            citations=[],
+            insufficient_context=True,
+            retrieved_chunks_count=len(retrieved_chunks),
+            standalone_query=standalone_query,
+            is_error=False,
+            model_used=active_model,
+        )
+        trace = RAGTrace(
+            standalone_query=standalone_query,
+            retrieved_chunks=list(retrieved_chunks),
+            context_chunks=[],
+            max_similarity=max_similarity,
+            threshold_triggered=True,
+            clarification_triggered=False,
+            rewriter_telemetry=rewriter_telemetry,
+            generation_telemetry=None,
+        )
+        return response, trace
+
+    # 6. Filter low-relevance lower-ranked chunks before prompt & citation construction
+    context_chunks = filter_context_chunks(retrieved_chunks)
+
+    # 7. Build prompt with filtered reference materials and conversational context
+    context_block = build_context_block(context_chunks)
+    history_block = build_history_block(chat_history)
+
+    prompt_sections = [context_block]
+    if history_block:
+        prompt_sections.append(history_block)
+    prompt_sections.append(f"<student_question>\n{question}\n</student_question>")
+    prompt_sections.append(
+        "Please answer the student's question based strictly on the reference materials above. "
+        "Remember to cite sources using [Document: <filename>, Page: <page_number>]."
+    )
+    prompt = "\n\n".join(prompt_sections)
+
+    # If GEMINI_API_KEY is not set and no mock callable provided
+    if not settings.GEMINI_API_KEY.strip() and llm_callable is None:
+        citations = build_citations(context_chunks)
+        context_snippets = "\n\n".join(
+            f"**From {c.document_name} (Page {c.page_number}):**\n> {c.snippet}"
+            for c in citations[:3]
+        )
+        response = QueryResponse(
+            answer=(
+                f"**Retrieved Learning Context (Gemini API key not configured):**\n\n"
+                f"{context_snippets}\n\n"
+                f"*(Note: To enable generative AI synthesis, add your `GEMINI_API_KEY` to `backend/.env`.)*"
+            ),
+            citations=citations,
+            insufficient_context=False,
+            retrieved_chunks_count=len(context_chunks),
+            standalone_query=standalone_query,
+            is_error=False,
+            model_used=active_model,
+        )
+        trace = RAGTrace(
+            standalone_query=standalone_query,
+            retrieved_chunks=list(retrieved_chunks),
+            context_chunks=list(context_chunks),
+            max_similarity=max_similarity,
+            threshold_triggered=False,
+            clarification_triggered=False,
+            rewriter_telemetry=rewriter_telemetry,
+            generation_telemetry=None,
+        )
+        return response, trace
+
+    llm_func = llm_callable or (lambda p: call_gemini(prompt=p, model=active_model, allow_fallback=False))
+    generation_telemetry: Optional[LLMGenerationResult] = None
+
+    with _capture_llm_telemetry() as gen_slot:
+        try:
+            answer_text = llm_func(prompt)
+            generation_telemetry = gen_slot["result"]
+        except Exception as err:
+            raw_err_tel = getattr(err, "telemetry_result", None)
+            generation_telemetry = gen_slot["result"] or (
+                raw_err_tel if isinstance(raw_err_tel, LLMGenerationResult) else None
+            )
+            logger.error("Error communicating with AI model (%s): %s", active_model, err, exc_info=True)
+            error_msg = str(err).strip()
+            if not error_msg or "Traceback" in error_msg:
+                error_msg = f"An error occurred while communicating with model '{active_model}'. Please try again."
+            # IMPORTANT: Preserve filtered context chunks and NEVER mark as insufficient context on API failure
+            citations = build_citations(context_chunks)
+            response = QueryResponse(
+                answer=f"Error communicating with AI model: {error_msg}",
+                citations=citations,
+                insufficient_context=False, # Never convert API error to insufficient context!
+                retrieved_chunks_count=len(context_chunks),
+                standalone_query=standalone_query,
+                is_error=True, # Explicitly flagged as provider/service error
+                model_used=active_model,
+            )
+            trace = RAGTrace(
+                standalone_query=standalone_query,
+                retrieved_chunks=list(retrieved_chunks),
+                context_chunks=list(context_chunks),
+                max_similarity=max_similarity,
+                threshold_triggered=False,
+                clarification_triggered=False,
+                rewriter_telemetry=rewriter_telemetry,
+                generation_telemetry=generation_telemetry,
+            )
+            return response, trace
+
+    insufficient = "cannot find sufficient evidence" in answer_text.lower()
+    citations = extract_and_prioritize_citations(
+        answer_text=answer_text,
+        retrieved_chunks=context_chunks,
+        insufficient_context=insufficient,
     )
 
-    models_to_try = [model_name]
-    if allow_fallback:
-        for fallback in ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]:
-            if fallback not in models_to_try:
-                models_to_try.append(fallback)
-
-    last_error: Optional[Exception] = None
-
-    for current_model in models_to_try:
-        for attempt in range(max_retries):
-            try:
-                response = ai_client.models.generate_content(
-                    model=current_model,
-                    contents=prompt,
-                    config=config,
-                )
-                if response and response.text:
-                    return response.text
-                raise RuntimeError("Received an empty response from the AI model.")
-
-            except Exception as exc:
-                last_error = exc
-                err_str = str(exc)
-                logger.warning(
-                    "Gemini API attempt %d/%d failed with model %s: %s",
-                    attempt + 1, max_retries, current_model, exc
-                )
-
-                # 1. Quota Exhausted: do not loop retry this model; try next model immediately if fallback enabled
-                if is_quota_exhausted_error(exc):
-                    logger.info("Daily quota exhausted for %s", current_model)
-                    break
-
-                # 2. Model 404: break to fallback model immediately
-                if "404" in err_str or "NOT_FOUND" in err_str:
-                    logger.info("Model %s returned 404", current_model)
-                    break
-
-                # 3. Transient rate-limit (429) or server unavailable (503): retry with backoff
-                if is_transient_rate_limit_error(exc) or "503" in err_str or "UNAVAILABLE" in err_str:
-                    if attempt < max_retries - 1:
-                        delay = extract_retry_delay_seconds(exc)
-                        if delay is not None and 0 < delay <= 15:
-                            wait_time = delay
-                        else:
-                            wait_time = (1.0 * (2 ** attempt)) + random.uniform(0.1, 0.4)
-                        logger.info("Transient rate limit/unavailable. Retrying in %.2fs...", wait_time)
-                        sleep_fn(wait_time)
-                        continue
-                    else:
-                        break
-
-                # 4. Authentication error: fail fast
-                if any(x in err_str for x in ["401", "403", "API_KEY_INVALID"]):
-                    raise RuntimeError(
-                        "Gemini API authentication failed. Please verify that GEMINI_API_KEY in backend/.env is valid."
-                    ) from exc
-
-                # Other error: if last attempt, try next model
-                if attempt == max_retries - 1:
-                    break
-
-    # If all models and retries failed, raise specific, clean user-friendly error
-    err_str = str(last_error) if last_error else ""
-    if is_quota_exhausted_error(last_error):
-        raise RuntimeError(
-            f"Gemini API daily quota exceeded for model '{model_name}'. "
-            "Please select a different available model or wait for your daily quota to reset in Google AI Studio."
-        ) from last_error
-
-    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-        raise RuntimeError(
-            f"Gemini API rate limit reached for model '{model_name}' after multiple attempts. Please wait a moment before trying again."
-        ) from last_error
-
-    if "404" in err_str or "NOT_FOUND" in err_str:
-        raise RuntimeError(
-            f"The configured AI model '{model_name}' was not found. Please verify available models or GEMINI_MODEL in backend/.env."
-        ) from last_error
-
-    if "503" in err_str or "UNAVAILABLE" in err_str:
-        raise RuntimeError(
-            "The AI service is temporarily experiencing high traffic spikes. Please try again in a few moments."
-        ) from last_error
-
-    raise RuntimeError(
-        f"Unable to generate response from model '{model_name}' at this moment. Please try again."
-    ) from last_error
+    response = QueryResponse(
+        answer=answer_text,
+        citations=citations,
+        insufficient_context=insufficient,
+        retrieved_chunks_count=len(context_chunks),
+        standalone_query=standalone_query,
+        is_error=False,
+        model_used=active_model,
+    )
+    trace = RAGTrace(
+        standalone_query=standalone_query,
+        retrieved_chunks=list(retrieved_chunks),
+        context_chunks=list(context_chunks),
+        max_similarity=max_similarity,
+        threshold_triggered=False,
+        clarification_triggered=False,
+        rewriter_telemetry=rewriter_telemetry,
+        generation_telemetry=generation_telemetry,
+    )
+    return response, trace
 
 def answer_question(
     question: str,
@@ -396,151 +647,15 @@ def answer_question(
     6. Call selected LLM to generate curriculum-grounded answer (with rate-limit backoff & model validation).
     7. Extract and prioritize verified source citations.
     """
-    clean_user_id = str(user_id).strip() if user_id else ""
-    if not clean_user_id:
-        if settings.ENVIRONMENT == "test" and settings.ALLOW_DEV_FALLBACK_AUTH:
-            clean_user_id = "test_default_user_1"
-        else:
-            raise ValueError("user_id is strictly required for grounded RAG retrieval to prevent cross-account data leakage")
-
-    chat_history = history or []
-    active_model = (model or settings.GEMINI_MODEL or "gemini-3.5-flash-lite").strip()
-    if active_model.startswith("models/"):
-        active_model = active_model[len("models/"):]
-
-    # 1. Standalone Query Rewriting
-    standalone_query = question
-    if chat_history:
-        standalone_query = rewrite_query(
-            question=question,
-            history=chat_history,
-            llm_callable=rewrite_callable,
-        )
-
-    # 2. Check if the rewriter requested clarification for genuine ambiguity
-    if standalone_query.startswith("CLARIFY:"):
-        clarification_msg = standalone_query[len("CLARIFY:"):].strip()
-        return QueryResponse(
-            answer=clarification_msg or "Could you clarify which programming concept or topic you are referring to?",
-            citations=[],
-            insufficient_context=False,
-            retrieved_chunks_count=0,
-            standalone_query=standalone_query,
-            is_error=False,
-            model_used=active_model,
-        )
-
-    # 3. Fresh Vector Retrieval using the standalone query with strict user ownership filter
-    store = vector_store or VectorStoreService.get_instance()
-    try:
-        retrieved_chunks = store.similarity_search(
-            query=standalone_query,
-            user_id=clean_user_id,
-            top_k=top_k,
-            document_filter=document_filter,
-        )
-    except TypeError:
-        # Fallback for custom test mock stores that don't accept user_id
-        retrieved_chunks = store.similarity_search(
-            query=standalone_query,
-            top_k=top_k,
-            document_filter=document_filter,
-        )
-
-    # 4. Check for empty context
-    if not retrieved_chunks:
-        return QueryResponse(
-            answer="I cannot find sufficient evidence in the uploaded learning materials to answer this question. Please upload relevant course materials or adjust your query.",
-            citations=[],
-            insufficient_context=True,
-            retrieved_chunks_count=0,
-            standalone_query=standalone_query,
-            is_error=False,
-            model_used=active_model,
-        )
-
-    # 5. Check maximum similarity against threshold
-    max_similarity = max((c.get("similarity", 0.0) for c in retrieved_chunks), default=0.0)
-    if max_similarity < settings.SIMILARITY_THRESHOLD:
-        return QueryResponse(
-            answer="I cannot find sufficient evidence in the uploaded learning materials to answer this question accurately. The closest retrieved passages have low relevance to your query.",
-            citations=[],
-            insufficient_context=True,
-            retrieved_chunks_count=len(retrieved_chunks),
-            standalone_query=standalone_query,
-            is_error=False,
-            model_used=active_model,
-        )
-
-    # 6. Build prompt with reference materials and conversational context
-    context_block = build_context_block(retrieved_chunks)
-    history_block = build_history_block(chat_history)
-
-    prompt_sections = [context_block]
-    if history_block:
-        prompt_sections.append(history_block)
-    prompt_sections.append(f"<student_question>\n{question}\n</student_question>")
-    prompt_sections.append(
-        "Please answer the student's question based strictly on the reference materials above. "
-        "Remember to cite sources using [Document: <filename>, Page: <page_number>]."
+    response, _ = answer_question_with_trace(
+        question=question,
+        user_id=user_id,
+        vector_store=vector_store,
+        document_filter=document_filter,
+        top_k=top_k,
+        history=history,
+        llm_callable=llm_callable,
+        rewrite_callable=rewrite_callable,
+        model=model,
     )
-    prompt = "\n\n".join(prompt_sections)
-
-    # If GEMINI_API_KEY is not set and no mock callable provided
-    if not settings.GEMINI_API_KEY.strip() and llm_callable is None:
-        citations = build_citations(retrieved_chunks)
-        context_snippets = "\n\n".join(
-            f"**From {c.document_name} (Page {c.page_number}):**\n> {c.snippet}"
-            for c in citations[:3]
-        )
-        return QueryResponse(
-            answer=(
-                f"**Retrieved Learning Context (Gemini API key not configured):**\n\n"
-                f"{context_snippets}\n\n"
-                f"*(Note: To enable generative AI synthesis, add your `GEMINI_API_KEY` to `backend/.env`.)*"
-            ),
-            citations=citations,
-            insufficient_context=False,
-            retrieved_chunks_count=len(retrieved_chunks),
-            standalone_query=standalone_query,
-            is_error=False,
-            model_used=active_model,
-        )
-
-    llm_func = llm_callable or (lambda p: call_gemini(prompt=p, model=active_model, allow_fallback=False))
-
-    try:
-        answer_text = llm_func(prompt)
-    except Exception as err:
-        logger.error("Error communicating with AI model (%s): %s", active_model, err, exc_info=True)
-        error_msg = str(err).strip()
-        if not error_msg or "Traceback" in error_msg:
-            error_msg = f"An error occurred while communicating with model '{active_model}'. Please try again."
-        # IMPORTANT: Preserve retrieved chunks and NEVER mark as insufficient context on API failure
-        citations = build_citations(retrieved_chunks)
-        return QueryResponse(
-            answer=f"Error communicating with AI model: {error_msg}",
-            citations=citations,
-            insufficient_context=False, # Never convert API error to insufficient context!
-            retrieved_chunks_count=len(retrieved_chunks),
-            standalone_query=standalone_query,
-            is_error=True, # Explicitly flagged as provider/service error
-            model_used=active_model,
-        )
-
-    insufficient = "cannot find sufficient evidence" in answer_text.lower()
-    citations = extract_and_prioritize_citations(
-        answer_text=answer_text,
-        retrieved_chunks=retrieved_chunks,
-        insufficient_context=insufficient,
-    )
-
-    return QueryResponse(
-        answer=answer_text,
-        citations=citations,
-        insufficient_context=insufficient,
-        retrieved_chunks_count=len(retrieved_chunks),
-        standalone_query=standalone_query,
-        is_error=False,
-        model_used=active_model,
-    )
+    return response

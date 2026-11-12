@@ -165,6 +165,7 @@ class VectorStoreService:
                 "document_name": meta.get("document_name", "Unknown"),
                 "source_filename": meta.get("source_filename", meta.get("document_name", "Unknown")),
                 "document_id": meta.get("document_id"),
+                "chunk_id": meta.get("chunk_id"),
                 "user_id": meta.get("user_id"),
                 "page_number": meta.get("page_number", 1),
                 "chunk_index": meta.get("chunk_index", 0),

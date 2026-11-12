@@ -165,6 +165,47 @@ export interface CodeReviewHistoryResponse {
   total: number;
 }
 
+export type SandboxLanguage = "python" | "java" | "cpp";
+
+export type ExecutionStatus =
+  | "success"
+  | "compilation_error"
+  | "compilation_timeout"
+  | "runtime_error"
+  | "timeout"
+  | "output_limit_exceeded"
+  | "infrastructure_error"
+  | "validation_error";
+
+export interface ExecutionRequest {
+  code: string;
+  language: SandboxLanguage;
+  stdin?: string | null;
+}
+
+export interface ExecutionResult {
+  status: ExecutionStatus;
+  stdout: string;
+  stderr: string;
+  compilation_error: string | null;
+  exit_code: number | null;
+  duration_ms: number;
+  compile_duration_ms: number | null;
+  truncated: boolean;
+}
+
+export class SandboxApiError extends Error {
+  statusCode: number;
+  executionResult?: ExecutionResult;
+
+  constructor(message: string, statusCode: number, executionResult?: ExecutionResult) {
+    super(message);
+    this.name = "SandboxApiError";
+    this.statusCode = statusCode;
+    this.executionResult = executionResult;
+  }
+}
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 let inMemoryAuthToken: string | null = null;
@@ -701,4 +742,107 @@ export async function clearCodeReviewHistory(): Promise<void> {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.detail || `Failed to clear review history: HTTP ${response.status}`);
   }
+}
+
+// -----------------------------------------------------------------------------
+// Docker Sandbox Execution API Service
+// -----------------------------------------------------------------------------
+
+function extractSafeValidationMessage(errorData: Record<string, unknown>): string {
+  if (typeof errorData.stderr === "string" && errorData.stderr.trim()) {
+    return errorData.stderr;
+  }
+  if (typeof errorData.detail === "string" && errorData.detail.trim()) {
+    return errorData.detail;
+  }
+  if (Array.isArray(errorData.detail)) {
+    const msgs = errorData.detail
+      .map((item) =>
+        item && typeof item === "object" && "msg" in item && typeof item.msg === "string"
+          ? item.msg
+          : null
+      )
+      .filter((m): m is string => Boolean(m));
+    if (msgs.length > 0) {
+      return msgs.join("; ");
+    }
+  }
+  return "Invalid code execution request. Check language, source size, and standard input limits.";
+}
+
+export async function runCode(request: ExecutionRequest): Promise<ExecutionResult> {
+  const headers = await getAuthHeaders({
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+  });
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/v1/sandbox/execute`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        code: request.code,
+        language: request.language,
+        stdin: request.stdin ?? null,
+      }),
+    });
+  } catch {
+    throw new SandboxApiError(
+      "Unable to reach the code execution server. Please verify the backend is running and try again.",
+      0
+    );
+  }
+
+  const data = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      throw new SandboxApiError(
+        "Your session is missing or has expired. Please sign in again to run code.",
+        401
+      );
+    }
+
+    if (response.status === 422) {
+      const resultPayload =
+        data && typeof data.status === "string" ? (data as unknown as ExecutionResult) : undefined;
+      throw new SandboxApiError(
+        data ? extractSafeValidationMessage(data) : "Validation failed for execution request.",
+        422,
+        resultPayload
+      );
+    }
+
+    if (response.status === 429) {
+      const detail =
+        data && typeof data.detail === "string" && data.detail.trim()
+          ? data.detail
+          : "Too many execution requests or concurrent runs in progress. Please wait and try again.";
+      throw new SandboxApiError(detail, 429);
+    }
+
+    if (response.status === 503) {
+      const resultPayload =
+        data && data.status === "infrastructure_error"
+          ? (data as unknown as ExecutionResult)
+          : undefined;
+      const msg =
+        resultPayload?.stderr?.trim() ||
+        "Code execution sandbox service is temporarily unavailable.";
+      throw new SandboxApiError(msg, 503, resultPayload);
+    }
+
+    const safeDetail =
+      data && typeof data.detail === "string" && data.detail.trim() && response.status < 500
+        ? data.detail
+        : `Code execution failed (HTTP ${response.status}). Please try again.`;
+    throw new SandboxApiError(safeDetail, response.status);
+  }
+
+  if (!data || typeof data.status !== "string") {
+    throw new SandboxApiError("Received an unexpected response format from the execution server.", 502);
+  }
+
+  return data as unknown as ExecutionResult;
 }

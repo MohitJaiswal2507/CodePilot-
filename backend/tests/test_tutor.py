@@ -998,5 +998,38 @@ ValueError: Failed to parse user profile payload."""
     assert response.citations[0].page_number == 19
 
 
+def test_answer_question_filters_low_relevance_tail_chunks_and_retains_multi_aspect(monkeypatch):
+    monkeypatch.setattr(settings, "SIMILARITY_THRESHOLD", 0.35)
+    monkeypatch.setattr(settings, "SECONDARY_SIMILARITY_THRESHOLD", 0.35)
+    monkeypatch.setattr(settings, "RETRIEVAL_SCORE_GAP", 0.25)
+
+    multi_and_noise_chunks = [
+        {"chunk_id": "c1", "text": "Merge sort time complexity is O(n log n).", "document_name": "DSA.pdf", "page_number": 1, "chunk_index": 0, "similarity": 0.71},
+        {"chunk_id": "c2", "text": "Binary search time complexity is O(log n).", "document_name": "DSA.pdf", "page_number": 2, "chunk_index": 1, "similarity": 0.65},
+        {"chunk_id": "c3", "text": "B-Trees store sorted keys across disk blocks.", "document_name": "DB.pdf", "page_number": 2, "chunk_index": 2, "similarity": 0.40},  # gap=0.31 > 0.25
+        {"chunk_id": "c4", "text": "TCP uses a three-way handshake.", "document_name": "Net.pdf", "page_number": 1, "chunk_index": 3, "similarity": 0.21},
+    ]
+    mock_store = MockVectorStore(multi_and_noise_chunks)
+    captured_prompt = []
+
+    def mock_llm(prompt: str) -> str:
+        captured_prompt.append(prompt)
+        return "Merge sort is O(n log n) while binary search is O(log n)."  # no explicit tags -> tests fallback citations too
+
+    res = answer_question(
+        question="Compare merge sort and binary search time complexity.",
+        vector_store=mock_store,
+        llm_callable=mock_llm,
+    )
+
+    assert not res.insufficient_context
+    assert "Merge sort time complexity" in captured_prompt[0]
+    assert "Binary search time complexity" in captured_prompt[0]
+    assert "B-Trees store sorted keys" not in captured_prompt[0]
+    assert "TCP uses a three-way handshake" not in captured_prompt[0]
+    assert res.retrieved_chunks_count == 2
+    assert [(c.document_name, c.page_number) for c in res.citations] == [("DSA.pdf", 1), ("DSA.pdf", 2)]
+
+
 
 

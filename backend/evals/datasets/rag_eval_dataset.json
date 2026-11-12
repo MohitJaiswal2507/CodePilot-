@@ -1,0 +1,440 @@
+{
+  "dataset_version": "1.0",
+  "description": "Synthetic computer science curriculum corpus and curated RAG evaluation cases for CodePilot AI.",
+  "documents": [
+    {
+      "document_name": "dsa_algorithms.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "text": "Merge sort is a divide-and-conquer comparison sorting algorithm that recursively splits an array into two halves, sorts each half, and merges the sorted subarrays in linear time. Its worst-case, average-case, and best-case time complexity are all O(n log n). Standard array-based merge sort requires O(n) auxiliary space for the temporary merge buffer and preserves relative order of equal keys (stable sorting)."
+        },
+        {
+          "page_number": 2,
+          "text": "Binary search locates a target value within a sorted array by repeatedly comparing the target to the middle element and eliminating half of the remaining search interval each step. Because the interval halves on every comparison, worst-case time complexity is O(log n). An iterative implementation uses O(1) auxiliary space."
+        },
+        {
+          "page_number": 3,
+          "text": "A hash table maps keys to array indices using a hash function to achieve O(1) expected lookup, insertion, and deletion time. When two distinct keys map to the same bucket, collisions are resolved through separate chaining (linked buckets) or open addressing (such as linear probing). Under adversarial hash collisions, worst-case lookup degrades to O(n)."
+        }
+      ]
+    },
+    {
+      "document_name": "operating_systems.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "text": "Virtual memory decouples logical program addresses from physical RAM using fixed-size pages mapped to physical frames via per-process page tables. The Translation Lookaside Buffer (TLB) is a hardware cache that accelerates virtual-to-physical address translation. A page fault occurs when a process accesses a valid virtual page that is not currently resident in physical memory."
+        },
+        {
+          "page_number": 2,
+          "text": "Deadlock occurs when a set of processes blocks permanently waiting for resources held by one another. Coffman identified four necessary conditions that must hold simultaneously: mutual exclusion, hold and wait, no preemption, and circular wait. Breaking any one of the four conditions prevents deadlock."
+        },
+        {
+          "page_number": 3,
+          "text": "A process is an independent execution unit with its own isolated virtual address space and OS resource descriptors. Multiple threads within the same process share the process heap, global data, and open file descriptors while maintaining private execution stacks and CPU registers, making intra-process thread context switches faster than process switches."
+        }
+      ]
+    },
+    {
+      "document_name": "computer_networks.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "text": "TCP is a connection-oriented transport protocol providing reliable, ordered byte-stream delivery through sequence numbers, acknowledgments, and congestion control. Connections initialize via a three-way handshake: SYN, SYN-ACK, and ACK. By contrast, UDP is connectionless, does not guarantee ordering or retransmission, and minimizes header and latency overhead."
+        },
+        {
+          "page_number": 2,
+          "text": "The Domain Name System (DNS) translates human-readable hostnames such as api.example.com into routable IP addresses. At the application layer, HTTP defines standard response status codes: 200 OK indicates success, 401 Unauthorized indicates missing or invalid authentication credentials, and 404 Not Found indicates the requested resource does not exist."
+        }
+      ]
+    },
+    {
+      "document_name": "database_systems.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "text": "Relational database transactions follow ACID properties to preserve reliability under concurrency and crashes. Atomicity guarantees all operations in a transaction commit together or roll back completely. Consistency ensures transactions transition the database between valid constraint states. Isolation prevents concurrent transactions from observing uncommitted interference, and Durability ensures committed writes survive power loss via write-ahead logging (WAL)."
+        },
+        {
+          "page_number": 2,
+          "text": "Database engines commonly use balanced B-Tree indexes (specifically B+Trees) to store sorted keys across disk blocks with high fan-out. Maintaining logarithmic tree height O(log n) enables both fast equality lookups and efficient sequential range queries without scanning an entire heap table."
+        }
+      ]
+    },
+    {
+      "document_name": "programming_fundamentals.pdf",
+      "pages": [
+        {
+          "page_number": 1,
+          "text": "Lexical scoping resolves variable bindings based on where functions are defined in source code rather than where they are called. A closure is a function bundled together with references to variables from its enclosing lexical environment, enabling inner functions to retain and access outer state even after the outer function has returned."
+        },
+        {
+          "page_number": 2,
+          "text": "Recursion solves a problem by having a function invoke itself on smaller subproblems. Every recursive call allocates a new activation frame on the call stack to store parameters and local variables. A well-defined base case is mandatory to terminate recursion and prevent unbounded stack growth and stack overflow errors."
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "rag_ans_01",
+      "category": "answerable_direct",
+      "question": "What are the worst-case time complexity and auxiliary space complexity of merge sort?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["dsa_algorithms.pdf"],
+      "expected_pages": [{"document_name": "dsa_algorithms.pdf", "page_number": 1}],
+      "expected_chunk_ids": ["dsa_algorithms_pdf_p1_c0"],
+      "expected_evidence_substrings": ["O(n log n)", "O(n) auxiliary space"],
+      "expected_answer_concepts": ["O(n log n)", "O(n)"],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "Standard array-based merge sort has a worst-case time complexity of O(n log n), requires O(n) auxiliary space, and provides stable sorting [Document: dsa_algorithms.pdf, Page: 1]."
+    },
+    {
+      "id": "rag_ans_02",
+      "category": "answerable_direct",
+      "question": "What precondition is required for binary search and what is its worst-case time complexity?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["dsa_algorithms.pdf"],
+      "expected_pages": [{"document_name": "dsa_algorithms.pdf", "page_number": 2}],
+      "expected_chunk_ids": ["dsa_algorithms_pdf_p2_c1"],
+      "expected_evidence_substrings": ["sorted array", "O(log n)"],
+      "expected_answer_concepts": ["sorted", "O(log n)", "halves"],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "Binary search requires a sorted array and achieves O(log n) worst-case time complexity because it halves the remaining search interval each step [Document: dsa_algorithms.pdf, Page: 2]."
+    },
+    {
+      "id": "rag_ans_03",
+      "category": "answerable_direct",
+      "question": "How are collisions handled in hash tables and what is the worst-case lookup complexity?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["dsa_algorithms.pdf"],
+      "expected_pages": [{"document_name": "dsa_algorithms.pdf", "page_number": 3}],
+      "expected_chunk_ids": ["dsa_algorithms_pdf_p3_c2"],
+      "expected_evidence_substrings": ["separate chaining", "open addressing", "O(n)"],
+      "expected_answer_concepts": ["separate chaining", "open addressing", "O(n)"],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "Hash tables resolve collisions via separate chaining or open addressing, and worst-case lookup degrades to O(n) under severe collisions [Document: dsa_algorithms.pdf, Page: 3]."
+    },
+    {
+      "id": "rag_ans_04",
+      "category": "answerable_direct",
+      "question": "What is the role of the TLB and what causes a page fault in virtual memory?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["operating_systems.pdf"],
+      "expected_pages": [{"document_name": "operating_systems.pdf", "page_number": 1}],
+      "expected_chunk_ids": ["operating_systems_pdf_p1_c0"],
+      "expected_evidence_substrings": ["Translation Lookaside Buffer", "not currently resident"],
+      "expected_answer_concepts": ["Translation Lookaside Buffer", "address translation", "not currently resident"],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "The Translation Lookaside Buffer (TLB) caches virtual-to-physical address translations, while a page fault occurs when a accessed valid page is not currently resident in physical memory [Document: operating_systems.pdf, Page: 1]."
+    },
+    {
+      "id": "rag_ans_05",
+      "category": "answerable_direct",
+      "question": "List the four Coffman conditions required for deadlock to occur.",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["operating_systems.pdf"],
+      "expected_pages": [{"document_name": "operating_systems.pdf", "page_number": 2}],
+      "expected_chunk_ids": ["operating_systems_pdf_p2_c1"],
+      "expected_evidence_substrings": ["mutual exclusion", "hold and wait", "no preemption", "circular wait"],
+      "expected_answer_concepts": ["mutual exclusion", "hold and wait", "no preemption", "circular wait"],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "Deadlock requires all four Coffman conditions simultaneously: mutual exclusion, hold and wait, no preemption, and circular wait [Document: operating_systems.pdf, Page: 2]."
+    },
+    {
+      "id": "rag_ans_06",
+      "category": "answerable_direct",
+      "question": "What memory resources do threads within the same process share versus keep private?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["operating_systems.pdf"],
+      "expected_pages": [{"document_name": "operating_systems.pdf", "page_number": 3}],
+      "expected_chunk_ids": ["operating_systems_pdf_p3_c2"],
+      "expected_evidence_substrings": ["share the process heap", "private execution stacks"],
+      "expected_answer_concepts": ["heap", "stacks", "registers"],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "Threads in the same process share the heap, global data, and open files, while keeping private execution stacks and CPU registers [Document: operating_systems.pdf, Page: 3]."
+    },
+    {
+      "id": "rag_ans_07",
+      "category": "answerable_direct",
+      "question": "What messages are exchanged during the TCP three-way handshake?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["computer_networks.pdf"],
+      "expected_pages": [{"document_name": "computer_networks.pdf", "page_number": 1}],
+      "expected_chunk_ids": ["computer_networks_pdf_p1_c0"],
+      "expected_evidence_substrings": ["SYN, SYN-ACK, and ACK"],
+      "expected_answer_concepts": ["SYN", "SYN-ACK", "ACK"],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "A TCP connection is established via the three-way handshake exchanging SYN, SYN-ACK, and ACK packets [Document: computer_networks.pdf, Page: 1]."
+    },
+    {
+      "id": "rag_ans_08",
+      "category": "answerable_direct",
+      "question": "What do Atomicity and Durability mean in ACID database transactions?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["database_systems.pdf"],
+      "expected_pages": [{"document_name": "database_systems.pdf", "page_number": 1}],
+      "expected_chunk_ids": ["database_systems_pdf_p1_c0"],
+      "expected_evidence_substrings": ["commit together or roll back", "write-ahead logging"],
+      "expected_answer_concepts": ["roll back", "committed writes", "write-ahead logging"],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "Atomicity ensures operations commit together or roll back completely, while Durability ensures committed writes survive power loss through write-ahead logging (WAL) [Document: database_systems.pdf, Page: 1]."
+    },
+    {
+      "id": "rag_ans_09",
+      "category": "answerable_direct",
+      "question": "Why are B-Tree indexes effective for database range queries?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["database_systems.pdf"],
+      "expected_pages": [{"document_name": "database_systems.pdf", "page_number": 2}],
+      "expected_chunk_ids": ["database_systems_pdf_p2_c1"],
+      "expected_evidence_substrings": ["sorted keys", "O(log n)", "range queries"],
+      "expected_answer_concepts": ["sorted keys", "O(log n)", "range queries"],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "B-Tree indexes store sorted keys across high fan-out disk blocks with O(log n) height, enabling fast lookups and sequential range queries without full table scans [Document: database_systems.pdf, Page: 2]."
+    },
+    {
+      "id": "rag_ans_10",
+      "category": "answerable_direct",
+      "question": "Why is a base case mandatory in recursive functions?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["programming_fundamentals.pdf"],
+      "expected_pages": [{"document_name": "programming_fundamentals.pdf", "page_number": 2}],
+      "expected_chunk_ids": ["programming_fundamentals_pdf_p2_c1"],
+      "expected_evidence_substrings": ["base case", "stack overflow"],
+      "expected_answer_concepts": ["terminate recursion", "call stack", "stack overflow"],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "A base case is mandatory to terminate recursion so activation frames do not cause unbounded call stack growth and stack overflow errors [Document: programming_fundamentals.pdf, Page: 2]."
+    },
+    {
+      "id": "rag_conv_01",
+      "category": "conversational_followup",
+      "question": "How does it remember outer variables after the outer function finishes?",
+      "history": [
+        {"role": "user", "content": "What is a closure in programming?"},
+        {"role": "assistant", "content": "A closure combines a function with its surrounding scope."}
+      ],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["programming_fundamentals.pdf"],
+      "expected_pages": [{"document_name": "programming_fundamentals.pdf", "page_number": 1}],
+      "expected_chunk_ids": ["programming_fundamentals_pdf_p1_c0"],
+      "expected_evidence_substrings": ["lexical environment", "outer function has returned"],
+      "expected_answer_concepts": ["lexical environment", "references", "outer function has returned"],
+      "mock_rewrite_response": "How does a closure retain access to outer variables after the outer function has returned?",
+      "mock_llm_response": "A closure bundles the function with references to its enclosing lexical environment, letting inner functions access outer variables after the outer function has returned [Document: programming_fundamentals.pdf, Page: 1]."
+    },
+    {
+      "id": "rag_conv_02",
+      "category": "conversational_followup",
+      "question": "How does UDP differ from it?",
+      "history": [
+        {"role": "user", "content": "Explain TCP reliable byte-stream delivery."},
+        {"role": "assistant", "content": "TCP uses sequence numbers, acknowledgments, and a three-way handshake."}
+      ],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["computer_networks.pdf"],
+      "expected_pages": [{"document_name": "computer_networks.pdf", "page_number": 1}],
+      "expected_chunk_ids": ["computer_networks_pdf_p1_c0"],
+      "expected_evidence_substrings": ["UDP is connectionless", "does not guarantee ordering"],
+      "expected_answer_concepts": ["connectionless", "ordering", "latency overhead"],
+      "mock_rewrite_response": "How does UDP differ from TCP transport protocol?",
+      "mock_llm_response": "Unlike TCP, UDP is connectionless, does not guarantee ordering or retransmission, and minimizes header and latency overhead [Document: computer_networks.pdf, Page: 1]."
+    },
+    {
+      "id": "rag_conv_03",
+      "category": "conversational_followup",
+      "question": "And what extra space does it need?",
+      "history": [
+        {"role": "user", "content": "How fast is merge sort in the worst case?"},
+        {"role": "assistant", "content": "Merge sort runs in O(n log n) worst-case time."}
+      ],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["dsa_algorithms.pdf"],
+      "expected_pages": [{"document_name": "dsa_algorithms.pdf", "page_number": 1}],
+      "expected_chunk_ids": ["dsa_algorithms_pdf_p1_c0"],
+      "expected_evidence_substrings": ["O(n) auxiliary space"],
+      "expected_answer_concepts": ["O(n)", "auxiliary space", "merge buffer"],
+      "mock_rewrite_response": "What is the auxiliary space complexity of merge sort?",
+      "mock_llm_response": "Standard array-based merge sort requires O(n) auxiliary space for the temporary merge buffer [Document: dsa_algorithms.pdf, Page: 1]."
+    },
+    {
+      "id": "rag_conv_04",
+      "category": "conversational_followup",
+      "question": "If I prevent circular wait, can that still happen?",
+      "history": [
+        {"role": "user", "content": "What causes deadlock in operating systems?"},
+        {"role": "assistant", "content": "Deadlock occurs when the four Coffman conditions hold simultaneously."}
+      ],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": true,
+      "expect_clarification": false,
+      "expected_documents": ["operating_systems.pdf"],
+      "expected_pages": [{"document_name": "operating_systems.pdf", "page_number": 2}],
+      "expected_chunk_ids": ["operating_systems_pdf_p2_c1"],
+      "expected_evidence_substrings": ["Breaking any one of the four conditions prevents deadlock"],
+      "expected_answer_concepts": ["prevents deadlock", "four conditions", "circular wait"],
+      "mock_rewrite_response": "Does preventing circular wait prevent deadlock in operating systems?",
+      "mock_llm_response": "No, breaking any one of the four conditions—including circular wait—prevents deadlock because all four conditions must hold simultaneously [Document: operating_systems.pdf, Page: 2]."
+    },
+    {
+      "id": "rag_amb_01",
+      "category": "ambiguous",
+      "question": "What is its space complexity?",
+      "history": [
+        {"role": "user", "content": "We are comparing merge sort and binary search."},
+        {"role": "assistant", "content": "Both divide problems into halves using divide-and-conquer."}
+      ],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": false,
+      "expect_clarification": true,
+      "expected_documents": [],
+      "expected_pages": [],
+      "expected_chunk_ids": [],
+      "expected_evidence_substrings": [],
+      "expected_answer_concepts": [],
+      "mock_rewrite_response": "CLARIFY: Could you clarify whether you are asking about the space complexity of merge sort or binary search?",
+      "mock_llm_response": null
+    },
+    {
+      "id": "rag_amb_02",
+      "category": "ambiguous",
+      "question": "Compare the other one with that.",
+      "history": [
+        {"role": "user", "content": "Let's review OS concurrency and networking."},
+        {"role": "assistant", "content": "Sure, we can discuss processes, threads, TCP, or UDP."}
+      ],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": false,
+      "expect_clarification": true,
+      "expected_documents": [],
+      "expected_pages": [],
+      "expected_chunk_ids": [],
+      "expected_evidence_substrings": [],
+      "expected_answer_concepts": [],
+      "mock_rewrite_response": "CLARIFY: Could you specify which two concepts you would like to compare?",
+      "mock_llm_response": null
+    },
+    {
+      "id": "rag_unans_01",
+      "category": "unanswerable",
+      "question": "How do Kubernetes HorizontalPodAutoscaler custom Prometheus metrics work?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": false,
+      "expect_clarification": false,
+      "expected_documents": [],
+      "expected_pages": [],
+      "expected_chunk_ids": [],
+      "expected_evidence_substrings": [],
+      "expected_answer_concepts": [],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "I cannot find sufficient evidence in the uploaded learning materials to answer this question."
+    },
+    {
+      "id": "rag_unans_02",
+      "category": "unanswerable",
+      "question": "Explain the quantum gate depth of Shor's integer factorization circuit.",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": false,
+      "expect_clarification": false,
+      "expected_documents": [],
+      "expected_pages": [],
+      "expected_chunk_ids": [],
+      "expected_evidence_substrings": [],
+      "expected_answer_concepts": [],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "I cannot find sufficient evidence in the uploaded learning materials to answer this question."
+    },
+    {
+      "id": "rag_unans_03",
+      "category": "unanswerable",
+      "question": "What are the Rust tokio Pin projection macro rules for self-referential futures?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": false,
+      "expect_clarification": false,
+      "expected_documents": [],
+      "expected_pages": [],
+      "expected_chunk_ids": [],
+      "expected_evidence_substrings": [],
+      "expected_answer_concepts": [],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "I cannot find sufficient evidence in the uploaded learning materials to answer this question."
+    },
+    {
+      "id": "rag_unans_04",
+      "category": "unanswerable",
+      "question": "What are the default Raft consensus election timeout milliseconds in etcd?",
+      "history": [],
+      "document_filter": null,
+      "top_k": 4,
+      "answerable": false,
+      "expect_clarification": false,
+      "expected_documents": [],
+      "expected_pages": [],
+      "expected_chunk_ids": [],
+      "expected_evidence_substrings": [],
+      "expected_answer_concepts": [],
+      "mock_rewrite_response": null,
+      "mock_llm_response": "I cannot find sufficient evidence in the uploaded learning materials to answer this question."
+    }
+  ]
+}
+
