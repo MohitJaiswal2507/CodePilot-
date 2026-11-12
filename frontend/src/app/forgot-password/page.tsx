@@ -23,7 +23,7 @@ export default function ForgotPasswordPage() {
     setIsLoading(true);
     try {
       // Better Auth forgetPassword endpoint
-      const clientAny = authClient as unknown as Record<string, (args: any) => Promise<any>>;
+      const clientAny = authClient as unknown as Record<string, (args: Record<string, unknown>) => Promise<unknown>>;
       if (typeof clientAny.forgetPassword === "function") {
         await clientAny.forgetPassword({
           email: email.trim(),
