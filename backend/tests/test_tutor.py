@@ -193,7 +193,9 @@ def test_answer_question_gemini_error_preserves_citations():
     )
 
     assert "Error communicating with AI model" in response.answer
-    assert "gemini-1.5-flash" in response.answer
+    assert "gemini-1.5-flash" not in response.answer
+    assert "was not found" not in response.answer
+    assert response.is_error is True
     assert len(response.citations) == 1
     assert response.citations[0].document_name == "JS_Notes.pdf"
     assert response.citations[0].page_number == 3
@@ -685,7 +687,8 @@ def test_answer_question_gemini_failure_preserves_citations_and_sets_is_error():
     assert len(response.citations) == 1
     assert response.citations[0].document_name == "JS_Learn.pdf"
     assert response.citations[0].page_number == 3
-    assert "Gemini API daily quota exceeded" in response.answer
+    assert "Error communicating with AI model" in response.answer
+    assert "Gemini API daily quota exceeded" not in response.answer
 
 # -----------------------------------------------------------------------------
 # 10. Dynamic Gemini Model Selection & Routing Tests
@@ -1029,6 +1032,107 @@ def test_answer_question_filters_low_relevance_tail_chunks_and_retains_multi_asp
     assert "TCP uses a three-way handshake" not in captured_prompt[0]
     assert res.retrieved_chunks_count == 2
     assert [(c.document_name, c.page_number) for c in res.citations] == [("DSA.pdf", 1), ("DSA.pdf", 2)]
+
+
+def test_upload_vector_store_failure_is_sanitized(monkeypatch):
+    """Vector store indexing failures must not expose raw exception strings to clients."""
+    import uuid
+    from types import SimpleNamespace
+    import app.api.routes.tutor as tutor_routes
+
+    monkeypatch.setattr(tutor_routes, "validate_pdf", lambda b, f: None)
+    monkeypatch.setattr(
+        tutor_routes,
+        "extract_text_by_page",
+        lambda b, f: [SimpleNamespace(page_number=1, text="Sample page text.")],
+    )
+    monkeypatch.setattr(
+        tutor_routes,
+        "chunk_document",
+        lambda pages, f: [
+            SimpleNamespace(
+                chunk_id="c1",
+                text="Sample page text.",
+                document_name=f,
+                page_number=1,
+                chunk_index=0,
+            )
+        ],
+    )
+
+    class BrokenStore:
+        def delete_document(self, **kwargs):
+            return None
+
+        def add_document_chunks(self, **kwargs):
+            raise RuntimeError("chroma internal sqlite path /var/data/chroma.sqlite3 failed")
+
+    monkeypatch.setattr(
+        tutor_routes.VectorStoreService,
+        "get_instance",
+        staticmethod(lambda: BrokenStore()),
+    )
+
+    unique_filename = f"notes_{uuid.uuid4().hex[:8]}.pdf"
+    response = client.post(
+        "/api/tutor/upload",
+        files={"file": (unique_filename, b"%PDF-1.4\n%fake", "application/pdf")},
+    )
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Failed to index document in vector store."
+    assert "chroma.sqlite3" not in response.text
+
+
+def test_tutor_logs_exclude_email_and_question_snippets(caplog, monkeypatch):
+    """Tutor INFO logs must not log user email addresses or question snippets."""
+    import logging
+    import app.api.routes.tutor as tutor_routes
+    from app.schemas.tutor import QueryResponse
+
+    monkeypatch.setattr(
+        tutor_routes,
+        "answer_question",
+        lambda **kwargs: QueryResponse(
+            answer="Ok",
+            citations=[],
+            insufficient_context=False,
+            retrieved_chunks_count=0,
+        ),
+    )
+
+    secret_question = "Secret student question about binary trees and pointers"
+    with caplog.at_level(logging.INFO, logger="app.api.routes.tutor"):
+        list_res = client.get("/api/tutor/documents")
+        assert list_res.status_code == 200
+        query_res = client.post("/api/tutor/query", json={"question": secret_question})
+        assert query_res.status_code == 200
+
+    assert "@" not in caplog.text
+    assert "Secret student question" not in caplog.text
+
+
+def test_rag_error_sanitized_in_answer_but_logged_server_side(caplog):
+    """Provider errors must be sanitized in QueryResponse.answer while logged server-side."""
+    import logging
+
+    mock_store = MockVectorStore(
+        [{"text": "Recursion uses a call stack.", "document_name": "CS.pdf", "page_number": 1, "similarity": 0.9}]
+    )
+
+    def failing_llm(prompt: str) -> str:
+        raise RuntimeError("upstream_provider_secret_diagnostic_12345")
+
+    with caplog.at_level(logging.ERROR, logger="app.services.rag_service"):
+        response = answer_question(
+            question="Explain recursion",
+            vector_store=mock_store,
+            llm_callable=failing_llm,
+        )
+
+    assert response.is_error is True
+    assert response.answer.startswith("Error communicating with AI model")
+    assert "upstream_provider_secret_diagnostic_12345" not in response.answer
+    assert "upstream_provider_secret_diagnostic_12345" in caplog.text
 
 
 
