@@ -2,14 +2,80 @@ import ast
 import re
 from typing import Dict, Any, List, Optional
 
+
+def _analyze_python_ast_structure(tree: ast.AST) -> Dict[str, Any]:
+    """Extract lightweight loop-depth and direct-recursion signals from a Python AST."""
+    max_loop_depth = 0
+    recursive_functions: List[str] = []
+
+    def _walk_loop_depth(node: ast.AST, current_depth: int) -> None:
+        nonlocal max_loop_depth
+        next_depth = current_depth
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            next_depth = current_depth + 1
+            if next_depth > max_loop_depth:
+                max_loop_depth = next_depth
+        for child in ast.iter_child_nodes(node):
+            _walk_loop_depth(child, next_depth)
+
+    _walk_loop_depth(tree, 0)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            fn_name = node.name
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Call):
+                    if isinstance(inner.func, ast.Name) and inner.func.id == fn_name:
+                        recursive_functions.append(fn_name)
+                        break
+                    if (
+                        isinstance(inner.func, ast.Attribute)
+                        and isinstance(inner.func.value, ast.Name)
+                        and inner.func.value.id == "self"
+                        and inner.func.attr == fn_name
+                    ):
+                        recursive_functions.append(fn_name)
+                        break
+
+    unique_recursive = sorted(set(recursive_functions))
+    return {
+        "max_loop_depth": max_loop_depth,
+        "has_loops": max_loop_depth > 0,
+        "has_recursion": len(unique_recursive) > 0,
+        "recursive_functions": unique_recursive,
+        "signal_source": "python_ast",
+    }
+
+
+def _analyze_c_family_structure(code: str) -> Dict[str, Any]:
+    """Extract conservative heuristic loop signals for Java/C++ without pretending to be a full parser."""
+    stripped = re.sub(r"/\*.*?\*/", " ", code, flags=re.DOTALL)
+    stripped = re.sub(r"//.*?$", " ", stripped, flags=re.MULTILINE)
+    stripped = re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', " ", stripped)
+    has_loops = bool(re.search(r"\b(?:for|while)\b", stripped))
+    return {
+        "max_loop_depth": None,
+        "has_loops": has_loops,
+        "has_recursion": None,
+        "recursive_functions": [],
+        "signal_source": "heuristic_keyword_scan",
+    }
+
+
 def inspect_static_code(code: str, language: str) -> Dict[str, Any]:
     """
     Static code inspection tool:
-    Performs pure static parsing and structural checks without executing code.
-    Identifies syntax errors with exact line numbers, brace/delimiter imbalances,
-    and common structural pitfalls.
+    Performs pure static parsing (Python AST) or basic delimiter balancing (Java/C++)
+    without executing code.
     """
     clean_lang = language.lower().strip()
+    if clean_lang == "python":
+        analysis_type = "python_ast_inspection"
+    elif clean_lang in ("java", "cpp"):
+        analysis_type = "delimiter_balance_check"
+    else:
+        analysis_type = "unsupported"
+
     result: Dict[str, Any] = {
         "language": clean_lang,
         "line_count": len(code.splitlines()),
@@ -17,12 +83,20 @@ def inspect_static_code(code: str, language: str) -> Dict[str, Any]:
         "syntax_error": None,
         "error_line": None,
         "static_warnings": [],
-        "analysis_type": "pure_static_ast_inspection",
+        "analysis_type": analysis_type,
+        "structural_signals": {
+            "max_loop_depth": None,
+            "has_loops": None,
+            "has_recursion": None,
+            "recursive_functions": [],
+            "signal_source": "unavailable",
+        },
     }
 
     if clean_lang == "python":
         try:
             tree = ast.parse(code)
+            result["structural_signals"] = _analyze_python_ast_structure(tree)
             # Inspect for obvious static issues like division by zero
             for node in ast.walk(tree):
                 if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
@@ -72,6 +146,9 @@ def inspect_static_code(code: str, language: str) -> Dict[str, Any]:
             result["has_syntax_error"] = True
             result["syntax_error"] = f"Unclosed delimiter '{unclosed_char}' starting at line {unclosed_line}."
             result["error_line"] = unclosed_line
+
+        if not result["has_syntax_error"]:
+            result["structural_signals"] = _analyze_c_family_structure(code)
 
     return result
 

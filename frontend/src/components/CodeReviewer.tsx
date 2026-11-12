@@ -658,7 +658,7 @@ export function CodeReviewer() {
                   Python AST syntax check
                 </span>
                 <span className="text-[10px] px-2.5 py-1 rounded bg-slate-900 border border-slate-800 text-slate-400 font-mono">
-                  Big-O proof
+                  Estimated Big-O
                 </span>
                 <span className="text-[10px] px-2.5 py-1 rounded bg-slate-900 border border-slate-800 text-slate-400 font-mono">
                   6-factor edge cases
@@ -766,7 +766,7 @@ export function CodeReviewer() {
                       : "border-transparent text-slate-400 hover:text-slate-200"
                   }`}
                 >
-                  Complexity Proof
+                  Estimated Complexity
                 </button>
                 <button
                   onClick={() => setActiveTab("edge_cases")}
@@ -812,7 +812,7 @@ export function CodeReviewer() {
                       <div className="p-3.5 rounded-xl bg-slate-900/40 border border-slate-800/80 flex items-start gap-2.5 text-xs text-slate-400">
                         <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                         <div>
-                          <span className="font-semibold text-slate-300">Static AST Inspection:</span>{" "}
+                          <span className="font-semibold text-slate-300">Static Code Inspection:</span>{" "}
                           <span>{reviewResult.static_analysis_notes}</span>
                         </div>
                       </div>
