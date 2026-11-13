@@ -1,47 +1,39 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { 
-  BookOpen, 
-  UploadCloud, 
-  FileText, 
-  Trash2, 
-  Send, 
-  AlertCircle, 
-  CheckCircle2, 
-  Sparkles, 
-  Loader2, 
-  FileCheck, 
+import {
+  BookOpen,
+  UploadCloud,
+  FileText,
+  Trash2,
+  AlertCircle,
+  CheckCircle2,
+  Sparkles,
+  Loader2,
+  FileCheck,
   RotateCcw,
-  ExternalLink,
   ChevronRight,
   Filter,
   Cpu,
   RefreshCw,
   Check,
   ChevronDown,
-  Zap,
-  Layers,
-  Info,
   MessageSquare,
   Edit3,
   Plus,
   X,
-  Clock
+  Search,
+  SlidersHorizontal,
 } from "lucide-react";
-import { 
-  DocumentSummary, 
-  Citation, 
-  ChatMessage,
+import {
+  DocumentSummary,
+  Citation,
   ModelInfo,
   ConversationSummary,
-  ConversationDetail,
-  MessageRecord,
-  fetchDocuments, 
-  uploadDocument, 
-  deleteDocument, 
-  clearAllDocuments, 
-  askTutor,
+  fetchDocuments,
+  uploadDocument,
+  deleteDocument,
+  clearAllDocuments,
   fetchAvailableModels,
   fetchConversations,
   fetchConversation,
@@ -50,6 +42,7 @@ import {
   deleteConversation,
   sendConversationMessage,
 } from "@/services/api";
+import { Badge } from "@/components/ui";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { ChatComposer } from "./chat/ChatComposer";
 import { UserMessage } from "./chat/UserMessage";
@@ -78,6 +71,8 @@ export function AITutor() {
 
   // Left sidebar tab: "materials" or "history"
   const [leftTab, setLeftTab] = useState<"materials" | "history">("materials");
+  const [docSearchQuery, setDocSearchQuery] = useState<string>("");
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
 
   // Conversation Management State
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -227,6 +222,27 @@ export function AITutor() {
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isQuerying]);
+
+  // Mobile drawer body scroll locking & Escape key dismissal
+  useEffect(() => {
+    if (!mobileDrawerOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMobileDrawerOpen(false);
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [mobileDrawerOpen]);
 
   const handleFileUpload = async (file: File) => {
     if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -607,105 +623,121 @@ export function AITutor() {
 
   const currentModelObj = models.find((m) => m.id === selectedModel);
 
-  return (
-    <div className="h-[calc(100vh-8rem)] flex gap-6 max-w-7xl mx-auto select-none">
-      {/* Left Column: Learning Materials & Chat History Sidebar */}
-      <div className="w-80 flex flex-col rounded-xl border border-slate-800 bg-[#0d121f] shrink-0 overflow-hidden">
-        {/* Tab Switcher: Materials vs Chat History */}
-        <div className="p-1.5 border-b border-slate-800/80 bg-slate-900/60 flex items-center gap-1">
-          <button
-            onClick={() => setLeftTab("materials")}
-            className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all ${
-              leftTab === "materials"
-                ? "bg-slate-800 text-white shadow-sm border border-slate-700/60"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
-            }`}
-          >
-            <BookOpen className="w-3.5 h-3.5 text-indigo-400" />
-            <span>Materials</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-900 text-slate-300 border border-slate-700/60">
-              {documents.length}
-            </span>
-          </button>
-          <button
-            onClick={() => setLeftTab("history")}
-            className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all ${
-              leftTab === "history"
-                ? "bg-slate-800 text-white shadow-sm border border-slate-700/60"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
-            }`}
-          >
-            <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
-            <span>History</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-900 text-slate-300 border border-slate-700/60">
-              {conversations.length}
-            </span>
-          </button>
-        </div>
+  const filteredDocuments = documents.filter((doc) =>
+    doc.document_name.toLowerCase().includes(docSearchQuery.toLowerCase())
+  );
 
-        {/* TAB 1: MATERIALS CONTENT */}
-        {leftTab === "materials" && (
-          <div className="flex-1 flex flex-col min-h-0">
-            {/* Upload Drop Zone */}
-            <div className="p-4 border-b border-slate-800/80 space-y-3">
-              <div
-                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                onDragLeave={() => setIsDragging(false)}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-                className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
-                  isDragging
-                    ? "border-indigo-500 bg-indigo-500/10"
-                    : "border-slate-700/70 hover:border-indigo-500/60 bg-slate-900/40"
-                }`}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".pdf,application/pdf"
-                  onChange={handleFileChange}
-                  className="hidden"
-                />
-                {isUploading ? (
-                  <div className="flex flex-col items-center gap-2 py-2 text-indigo-400">
-                    <Loader2 className="w-6 h-6 animate-spin" />
-                    <span className="text-xs font-medium">Extracting & indexing...</span>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-1.5 py-1">
-                    <UploadCloud className="w-6 h-6 text-slate-400" />
-                    <p className="text-xs font-medium text-slate-200">Upload Course Material (PDF)</p>
-                    <p className="text-[10px] text-slate-500">Drag & drop or browse (Max 15MB)</p>
-                  </div>
-                )}
-              </div>
+  const renderSidebarContent = () => (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* Tab Switcher: Materials vs Chat History */}
+      <div className="p-2 border-b border-white/[0.08] bg-white/[0.02] flex items-center gap-1.5 shrink-0">
+        <button
+          onClick={() => setLeftTab("materials")}
+          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer ${
+            leftTab === "materials"
+              ? "bg-[#181C25] text-[#F4F4F5] shadow-sm border border-white/[0.12]"
+              : "text-[#A1A1AA] hover:text-[#F4F4F5] hover:bg-white/[0.04]"
+          }`}
+        >
+          <BookOpen className="w-3.5 h-3.5 text-[#3B82F6]" />
+          <span>Materials</span>
+          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#111319] text-[#A1A1AA] border border-[#272B36]">
+            {documents.length}
+          </span>
+        </button>
+        <button
+          onClick={() => setLeftTab("history")}
+          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer ${
+            leftTab === "history"
+              ? "bg-[#181C25] text-[#F4F4F5] shadow-sm border border-white/[0.12]"
+              : "text-[#A1A1AA] hover:text-[#F4F4F5] hover:bg-white/[0.04]"
+          }`}
+        >
+          <MessageSquare className="w-3.5 h-3.5 text-[#3B82F6]" />
+          <span>History</span>
+          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#111319] text-[#A1A1AA] border border-[#272B36]">
+            {conversations.length}
+          </span>
+        </button>
+      </div>
 
-              {/* Feedback Messages */}
-              {uploadError && (
-                <div className="p-2.5 rounded-lg bg-rose-950/40 border border-rose-800/60 text-rose-300 text-[11px] flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                  <span>{uploadError}</span>
+      {/* TAB 1: MATERIALS CONTENT */}
+      {leftTab === "materials" && (
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* Upload Drop Zone */}
+          <div className="p-3.5 border-b border-white/[0.08] space-y-3 shrink-0">
+            <div
+              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleDrop}
+              onClick={() => fileInputRef.current?.click()}
+              className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-all duration-150 ${
+                isDragging
+                  ? "border-[#3B82F6] bg-[#3B82F6]/10"
+                  : "border-white/[0.12] hover:border-[#3B82F6]/50 bg-white/[0.02] hover:bg-white/[0.04]"
+              }`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,application/pdf"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+              {isUploading ? (
+                <div className="flex flex-col items-center gap-2 py-2 text-[#3B82F6]">
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                  <span className="text-xs font-medium">Extracting & indexing chunks...</span>
                 </div>
-              )}
-              {uploadSuccess && (
-                <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-[11px] flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>{uploadSuccess}</span>
+              ) : (
+                <div className="flex flex-col items-center gap-1.5 py-1">
+                  <div className="w-9 h-9 rounded-lg bg-[#3B82F6]/15 border border-[#3B82F6]/30 text-[#3B82F6] flex items-center justify-center shadow-[0_0_16px_-4px_rgba(59,130,246,0.35)]">
+                    <UploadCloud className="w-5 h-5" />
+                  </div>
+                  <p className="text-xs font-medium text-[#F4F4F5]">Upload Course Material (PDF)</p>
+                  <p className="text-[10px] text-[#71717A]">Drag & drop or browse (Max 15MB)</p>
                 </div>
               )}
             </div>
 
-            {/* Filter Selection */}
-            {documents.length > 0 && (
-              <div className="px-4 py-2 bg-slate-900/60 border-b border-slate-800/80 flex items-center justify-between">
-                <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                  <Filter className="w-3 h-3 text-slate-400" />
+            {/* Feedback Messages */}
+            {uploadError && (
+              <div className="p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-[11px] flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{uploadError}</span>
+              </div>
+            )}
+            {uploadSuccess && (
+              <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px] flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{uploadSuccess}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Search Documents and Context Scope Filter */}
+          {documents.length > 0 && (
+            <div className="p-3 border-b border-white/[0.08] bg-white/[0.015] space-y-2 shrink-0">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-[#71717A] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={docSearchQuery}
+                  onChange={(e) => setDocSearchQuery(e.target.value)}
+                  placeholder="Search indexed PDFs..."
+                  className="w-full bg-[#111319] border border-white/[0.09] rounded-lg pl-8 pr-3 py-1.5 text-xs text-[#F4F4F5] placeholder:text-[#71717A] focus:outline-none focus:border-[#3B82F6]/60 transition-colors"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-0.5">
+                <div className="flex items-center gap-1.5 text-[11px] text-[#A1A1AA]">
+                  <Filter className="w-3 h-3 text-[#3B82F6]" />
                   <span>Context Scope:</span>
                 </div>
                 <select
                   value={selectedFilter}
                   onChange={(e) => setSelectedFilter(e.target.value)}
-                  className="bg-slate-800 border border-slate-700 text-slate-200 text-[11px] rounded px-2 py-1 max-w-[140px] truncate focus:outline-none focus:border-indigo-500"
+                  className="bg-[#111319] border border-white/[0.1] text-[#F4F4F5] text-[11px] rounded-md px-2 py-1 max-w-[150px] truncate focus:outline-none focus:border-[#3B82F6] cursor-pointer"
                 >
                   <option value="">All Documents</option>
                   {documents.map((d) => (
@@ -715,288 +747,359 @@ export function AITutor() {
                   ))}
                 </select>
               </div>
-            )}
+            </div>
+          )}
 
-            {/* Document List */}
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
-              {documents.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center p-4 text-slate-500">
-                  <FileText className="w-8 h-8 mb-2 opacity-40" />
-                  <p className="text-xs font-medium">No materials indexed yet</p>
-                  <p className="text-[11px] text-slate-500 mt-1 max-w-[180px]">
-                    Upload lecture notes, syllabi, or textbook chapters to ground answers.
-                  </p>
-                </div>
-              ) : (
-                documents.map((doc) => {
-                  const isFiltered = selectedFilter === doc.document_name;
-                  return (
-                    <div
-                      key={doc.document_name}
-                      className={`p-3 rounded-lg border transition-colors ${
-                        isFiltered
-                          ? "bg-indigo-950/20 border-indigo-500/50"
-                          : "bg-slate-900/40 border-slate-800/80 hover:border-slate-700"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex items-start gap-2">
-                          <FileCheck className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
-                          <div className="min-w-0">
-                            <p className="text-xs font-medium text-slate-200 truncate" title={doc.document_name}>
-                              {doc.document_name}
-                            </p>
-                            <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-400">
-                              <span>{doc.total_pages} {doc.total_pages === 1 ? "page" : "pages"}</span>
-                              <span>•</span>
-                              <span>{doc.total_chunks} chunks</span>
-                              {doc.file_size_bytes > 0 && (
-                                <>
-                                  <span>•</span>
-                                  <span>{formatFileSize(doc.file_size_bytes)}</span>
-                                </>
-                              )}
-                            </div>
+          {/* Document List */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {documents.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center p-4 text-[#71717A] space-y-2">
+                <FileText className="w-8 h-8 opacity-40 text-[#3B82F6]" />
+                <p className="text-xs font-medium text-[#A1A1AA]">No materials indexed yet</p>
+                <p className="text-[11px] text-[#71717A] max-w-[200px] leading-relaxed">
+                  Upload lecture notes, syllabi, or textbook chapters to ground answers.
+                </p>
+              </div>
+            ) : filteredDocuments.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center p-4 text-[#71717A] space-y-1">
+                <Search className="w-6 h-6 opacity-40" />
+                <p className="text-xs text-[#A1A1AA]">No documents match &ldquo;{docSearchQuery}&rdquo;</p>
+              </div>
+            ) : (
+              filteredDocuments.map((doc) => {
+                const isFiltered = selectedFilter === doc.document_name;
+                return (
+                  <div
+                    key={doc.document_name}
+                    onClick={() => {
+                      setSelectedFilter(isFiltered ? "" : doc.document_name);
+                    }}
+                    className={`p-3 rounded-xl border transition-all duration-150 cursor-pointer ${
+                      isFiltered
+                        ? "bg-[#3B82F6]/10 border-[#3B82F6]/40 shadow-[0_0_20px_-8px_rgba(59,130,246,0.35)]"
+                        : "bg-white/[0.02] border-white/[0.08] hover:border-white/[0.16] hover:bg-white/[0.04]"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex items-start gap-2.5">
+                        <div className="w-7 h-7 rounded-lg bg-[#3B82F6]/15 border border-[#3B82F6]/30 flex items-center justify-center text-[#3B82F6] shrink-0 mt-0.5">
+                          <FileCheck className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-[#F4F4F5] truncate" title={doc.document_name}>
+                            {doc.document_name}
+                          </p>
+                          <div className="flex items-center gap-1.5 mt-1 text-[10px] text-[#A1A1AA]">
+                            <span>{doc.total_pages} {doc.total_pages === 1 ? "page" : "pages"}</span>
+                            <span>•</span>
+                            <span>{doc.total_chunks} chunks</span>
+                            {doc.file_size_bytes > 0 && (
+                              <>
+                                <span>•</span>
+                                <span>{formatFileSize(doc.file_size_bytes)}</span>
+                              </>
+                            )}
                           </div>
                         </div>
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(doc.document_name);
+                        }}
+                        title="Remove document"
+                        className="text-[#71717A] hover:text-red-400 transition-colors p-1 rounded hover:bg-white/[0.06] cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Clear All Footer */}
+          {documents.length > 0 && (
+            <div className="p-3 border-t border-white/[0.08] bg-white/[0.015] flex justify-between items-center shrink-0">
+              <span className="text-[11px] text-[#A1A1AA]">
+                Total: {documents.reduce((acc, d) => acc + d.total_chunks, 0)} chunks
+              </span>
+              <button
+                onClick={handleClearAll}
+                className="text-[11px] text-[#A1A1AA] hover:text-red-400 transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                <Trash2 className="w-3 h-3" />
+                <span>Clear All</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 2: CHAT HISTORY CONTENT */}
+      {leftTab === "history" && (
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* New Chat Button */}
+          <div className="p-3 border-b border-white/[0.08] shrink-0">
+            <button
+              onClick={() => {
+                handleStartNewChat();
+                setMobileDrawerOpen(false);
+              }}
+              className="w-full py-2 px-3 rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] text-white text-xs font-medium flex items-center justify-center gap-2 transition-all duration-150 shadow-[0_0_16px_-4px_rgba(59,130,246,0.45)] cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>New Chat</span>
+            </button>
+          </div>
+
+          {/* Conversation Threads List */}
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            {isLoadingConversations && conversations.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center p-4 text-[#71717A] space-y-2">
+                <Loader2 className="w-5 h-5 animate-spin text-[#3B82F6]" />
+                <p className="text-xs">Loading conversations...</p>
+              </div>
+            ) : conversations.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center p-4 text-[#71717A] space-y-2">
+                <MessageSquare className="w-8 h-8 opacity-40 text-[#3B82F6]" />
+                <p className="text-xs font-medium text-[#A1A1AA]">No saved conversations</p>
+                <p className="text-[11px] text-[#71717A] max-w-[200px] leading-relaxed">
+                  Your questions and learning sessions will automatically persist here.
+                </p>
+              </div>
+            ) : (
+              conversations.map((conv) => {
+                const isActive = conv.id === activeConversationId;
+                const isEditingThis = editingConvId === conv.id;
+
+                return (
+                  <div
+                    key={conv.id}
+                    onClick={() => {
+                      handleSelectConversation(conv.id);
+                      setMobileDrawerOpen(false);
+                    }}
+                    className={`group relative p-2.5 rounded-xl border text-left cursor-pointer transition-all duration-150 ${
+                      isActive
+                        ? "bg-[#3B82F6]/15 border-[#3B82F6]/40 text-[#F4F4F5] shadow-[0_0_20px_-8px_rgba(59,130,246,0.35)]"
+                        : "bg-white/[0.02] border-transparent hover:bg-white/[0.04] hover:border-white/[0.08] text-[#A1A1AA]"
+                    }`}
+                  >
+                    {isEditingThis ? (
+                      <div
+                        className="flex items-center gap-1.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          autoFocus
+                          type="text"
+                          value={editingConvTitle}
+                          onChange={(e) => setEditingConvTitle(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleSaveInlineRename(conv.id);
+                            if (e.key === "Escape") setEditingConvId(null);
+                          }}
+                          className="flex-1 bg-[#080A10] border border-[#3B82F6] rounded px-2 py-1 text-xs text-[#F4F4F5] focus:outline-none"
+                        />
                         <button
-                          onClick={() => handleDelete(doc.document_name)}
-                          title="Remove document"
-                          className="text-slate-500 hover:text-rose-400 transition-colors p-1"
+                          onClick={() => handleSaveInlineRename(conv.id)}
+                          className="p-1 rounded bg-[#3B82F6] hover:bg-[#2563EB] text-white cursor-pointer"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <Check className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => setEditingConvId(null)}
+                          className="p-1 rounded bg-[#181C25] hover:bg-white/[0.08] text-[#A1A1AA] cursor-pointer"
+                        >
+                          <X className="w-3 h-3" />
                         </button>
                       </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
+                    ) : (
+                      <div className="flex items-start justify-between gap-1.5">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium truncate text-[#F4F4F5]" title={conv.title}>
+                            {conv.title}
+                          </p>
+                          <div className="flex items-center gap-2 mt-1 text-[10px] text-[#71717A]">
+                            <span>{conv.message_count} {conv.message_count === 1 ? "msg" : "msgs"}</span>
+                            <span>•</span>
+                            <span>{formatRelativeTime(conv.updated_at)}</span>
+                          </div>
+                        </div>
 
-            {/* Clear All Footer */}
-            {documents.length > 0 && (
-              <div className="p-3 border-t border-slate-800/80 bg-slate-900/40 flex justify-between items-center">
-                <span className="text-[11px] text-slate-400">Total: {documents.reduce((acc, d) => acc + d.total_chunks, 0)} chunks</span>
-                <button
-                  onClick={handleClearAll}
-                  className="text-[11px] text-slate-400 hover:text-rose-400 transition-colors flex items-center gap-1"
-                >
-                  <Trash2 className="w-3 h-3" />
-                  <span>Clear All</span>
-                </button>
-              </div>
+                        {/* Action icons on hover or active */}
+                        <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={(e) => handleStartInlineRename(conv, e)}
+                            title="Rename chat"
+                            className="p-1 text-[#71717A] hover:text-[#F4F4F5] transition-colors cursor-pointer"
+                          >
+                            <Edit3 className="w-3 h-3" />
+                          </button>
+                          <button
+                            onClick={(e) => handleDeleteConversation(conv.id, e)}
+                            title="Delete conversation"
+                            className="p-1 text-[#71717A] hover:text-red-400 transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
-        )}
 
-        {/* TAB 2: CHAT HISTORY CONTENT */}
-        {leftTab === "history" && (
-          <div className="flex-1 flex flex-col min-h-0">
-            {/* New Chat Button */}
-            <div className="p-3 border-b border-slate-800/80">
-              <button
-                onClick={handleStartNewChat}
-                className="w-full py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium flex items-center justify-center gap-2 transition-colors shadow-sm"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>New Chat</span>
-              </button>
-            </div>
-
-            {/* Conversation Threads List */}
-            <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-              {isLoadingConversations && conversations.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center p-4 text-slate-500 space-y-2">
-                  <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
-                  <p className="text-xs">Loading conversations...</p>
-                </div>
-              ) : conversations.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center p-4 text-slate-500">
-                  <MessageSquare className="w-8 h-8 mb-2 opacity-40" />
-                  <p className="text-xs font-medium">No saved conversations</p>
-                  <p className="text-[11px] text-slate-500 mt-1 max-w-[180px]">
-                    Your questions and learning sessions will automatically persist here.
-                  </p>
-                </div>
-              ) : (
-                conversations.map((conv) => {
-                  const isActive = conv.id === activeConversationId;
-                  const isEditingThis = editingConvId === conv.id;
-
-                  return (
-                    <div
-                      key={conv.id}
-                      onClick={() => handleSelectConversation(conv.id)}
-                      className={`group relative p-2.5 rounded-lg border text-left cursor-pointer transition-all ${
-                        isActive
-                          ? "bg-indigo-950/40 border-indigo-500/50 text-white shadow-sm"
-                          : "bg-slate-900/30 border-transparent hover:bg-slate-800/60 hover:border-slate-700/60 text-slate-300"
-                      }`}
-                    >
-                      {isEditingThis ? (
-                        <div
-                          className="flex items-center gap-1.5"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <input
-                            autoFocus
-                            type="text"
-                            value={editingConvTitle}
-                            onChange={(e) => setEditingConvTitle(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") handleSaveInlineRename(conv.id);
-                              if (e.key === "Escape") setEditingConvId(null);
-                            }}
-                            className="flex-1 bg-slate-950 border border-indigo-500 rounded px-2 py-1 text-xs text-white focus:outline-none"
-                          />
-                          <button
-                            onClick={() => handleSaveInlineRename(conv.id)}
-                            className="p-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white"
-                          >
-                            <Check className="w-3 h-3" />
-                          </button>
-                          <button
-                            onClick={() => setEditingConvId(null)}
-                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex items-start justify-between gap-1.5">
-                          <div className="min-w-0 flex-1">
-                            <p className="text-xs font-medium truncate" title={conv.title}>
-                              {conv.title}
-                            </p>
-                            <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-400">
-                              <span>{conv.message_count} {conv.message_count === 1 ? "msg" : "msgs"}</span>
-                              <span>•</span>
-                              <span>{formatRelativeTime(conv.updated_at)}</span>
-                            </div>
-                          </div>
-
-                          {/* Action icons on hover or active */}
-                          <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={(e) => handleStartInlineRename(conv, e)}
-                              title="Rename chat"
-                              className="p-1 text-slate-400 hover:text-slate-200 transition-colors"
-                            >
-                              <Edit3 className="w-3 h-3" />
-                            </button>
-                            <button
-                              onClick={(e) => handleDeleteConversation(conv.id, e)}
-                              title="Delete conversation"
-                              className="p-1 text-slate-400 hover:text-rose-400 transition-colors"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {/* History Footer */}
-            <div className="p-3 border-t border-slate-800/80 bg-slate-900/40 text-[11px] text-slate-400 flex items-center justify-between">
-              <span>{conversations.length} {conversations.length === 1 ? "thread" : "threads"} stored</span>
-              <button
-                onClick={loadConversations}
-                disabled={isLoadingConversations}
-                title="Refresh conversation list"
-                className="hover:text-slate-200 transition-colors flex items-center gap-1"
-              >
-                <RefreshCw className={`w-3 h-3 ${isLoadingConversations ? "animate-spin text-indigo-400" : ""}`} />
-                <span>Refresh</span>
-              </button>
-            </div>
+          {/* History Footer */}
+          <div className="p-3 border-t border-white/[0.08] bg-white/[0.015] text-[11px] text-[#A1A1AA] flex items-center justify-between shrink-0">
+            <span>{conversations.length} {conversations.length === 1 ? "thread" : "threads"} stored</span>
+            <button
+              onClick={loadConversations}
+              disabled={isLoadingConversations}
+              title="Refresh conversation list"
+              className="hover:text-[#F4F4F5] transition-colors flex items-center gap-1 cursor-pointer"
+            >
+              <RefreshCw className={`w-3 h-3 ${isLoadingConversations ? "animate-spin text-[#3B82F6]" : ""}`} />
+              <span>Refresh</span>
+            </button>
           </div>
-        )}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="h-[calc(100vh-7.5rem)] flex gap-5 max-w-7xl mx-auto select-none relative">
+      {/* Desktop Left Column: Learning Materials & Chat History Sidebar */}
+      <div className="hidden lg:flex w-80 flex-col rounded-xl bg-[#111319] border border-[#272B36] shrink-0 overflow-hidden">
+        {renderSidebarContent()}
       </div>
 
-      {/* Right Column: Q&A Chat Console */}
-      <div className="flex-1 flex flex-col rounded-xl border border-slate-800 bg-[#0d121f] overflow-hidden">
-        {/* Chat Header */}
-        <div className="p-4 border-b border-slate-800/80 flex items-center justify-between relative">
-          <div className="min-w-0 flex-1 mr-4">
-            <div className="flex items-center gap-2">
-              {isEditingHeaderTitle ? (
-                <div className="flex items-center gap-1.5 max-w-sm">
-                  <input
-                    autoFocus
-                    type="text"
-                    value={headerTitleInput}
-                    onChange={(e) => setHeaderTitleInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleSaveHeaderTitle();
-                      if (e.key === "Escape") setIsEditingHeaderTitle(false);
-                    }}
-                    className="bg-slate-950 border border-indigo-500 rounded px-2 py-0.5 text-xs text-white focus:outline-none"
-                  />
-                  <button
-                    onClick={handleSaveHeaderTitle}
-                    className="p-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white"
-                  >
-                    <Check className="w-3 h-3" />
-                  </button>
-                  <button
-                    onClick={() => setIsEditingHeaderTitle(false)}
-                    className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 group">
-                  <h2 className="text-sm font-semibold text-white truncate max-w-md" title={activeConversationTitle}>
-                    {activeConversationTitle || "AI Learning Assistant"}
-                  </h2>
-                  {activeConversationId && (
-                    <button
-                      onClick={() => {
-                        setHeaderTitleInput(activeConversationTitle);
-                        setIsEditingHeaderTitle(true);
-                      }}
-                      title="Rename conversation"
-                      className="p-1 text-slate-500 hover:text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <Edit3 className="w-3 h-3" />
-                    </button>
-                  )}
-                </div>
-              )}
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
-                Curriculum Grounded
-              </span>
+      {/* Mobile Drawer Overlay */}
+      {mobileDrawerOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Learning Materials and Conversation History"
+          className="fixed inset-0 z-50 lg:hidden flex"
+        >
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity"
+            onClick={() => setMobileDrawerOpen(false)}
+          />
+          <div className="relative w-80 max-w-[85vw] h-full bg-[#111319] border-r border-white/[0.1] shadow-2xl flex flex-col z-10">
+            <div className="p-3 border-b border-white/[0.08] flex items-center justify-between">
+              <span className="text-xs font-semibold text-[#F4F4F5]">Tutor Workspace</span>
+              <button
+                type="button"
+                onClick={() => setMobileDrawerOpen(false)}
+                className="p-1 rounded text-[#71717A] hover:text-[#F4F4F5] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6]"
+                aria-label="Close tutor workspace drawer"
+                title="Close drawer"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <p className="text-[11px] text-slate-400 mt-0.5 truncate">
-              {selectedFilter
-                ? `Restricted to context from: ${selectedFilter}`
-                : "Retrieving from all indexed course materials"}
-            </p>
+            {renderSidebarContent()}
+          </div>
+        </div>
+      )}
+
+      {/* Right Column: Q&A Chat Console */}
+      <div className="flex-1 flex flex-col rounded-xl bg-[#111319] border border-[#272B36] overflow-hidden min-w-0">
+        {/* Chat Header */}
+        <div className="p-3.5 sm:p-4 border-b border-white/[0.08] flex items-center justify-between relative bg-white/[0.02]">
+          <div className="min-w-0 flex-1 mr-3 flex items-center gap-2">
+            {/* Mobile Drawer Trigger Button */}
+            <button
+              onClick={() => setMobileDrawerOpen(true)}
+              className="lg:hidden p-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-[#3B82F6] hover:text-white transition-colors cursor-pointer shrink-0"
+              title="Open materials and history"
+            >
+              <SlidersHorizontal className="w-4 h-4" />
+            </button>
+
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                {isEditingHeaderTitle ? (
+                  <div className="flex items-center gap-1.5 max-w-sm">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={headerTitleInput}
+                      onChange={(e) => setHeaderTitleInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleSaveHeaderTitle();
+                        if (e.key === "Escape") setIsEditingHeaderTitle(false);
+                      }}
+                      className="bg-[#080A10] border border-[#3B82F6] rounded px-2 py-0.5 text-xs text-[#F4F4F5] focus:outline-none"
+                    />
+                    <button
+                      onClick={handleSaveHeaderTitle}
+                      className="p-1 rounded bg-[#3B82F6] hover:bg-[#2563EB] text-white cursor-pointer"
+                    >
+                      <Check className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={() => setIsEditingHeaderTitle(false)}
+                      className="p-1 rounded bg-[#181C25] hover:bg-white/[0.08] text-[#A1A1AA] cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 group min-w-0">
+                    <h2 className="text-sm font-semibold text-[#F4F4F5] truncate max-w-xs sm:max-w-md" title={activeConversationTitle}>
+                      {activeConversationTitle || "AI Learning Assistant"}
+                    </h2>
+                    {activeConversationId && (
+                      <button
+                        onClick={() => {
+                          setHeaderTitleInput(activeConversationTitle);
+                          setIsEditingHeaderTitle(true);
+                        }}
+                        title="Rename conversation"
+                        className="p-1 text-[#71717A] hover:text-[#F4F4F5] opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer shrink-0"
+                      >
+                        <Edit3 className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                )}
+                <Badge variant="ai" size="sm" dot className="shrink-0 hidden sm:inline-flex">
+                  Curriculum Grounded
+                </Badge>
+              </div>
+              <p className="text-[11px] text-[#A1A1AA] mt-0.5 truncate">
+                {selectedFilter
+                  ? `Filtered to context: ${selectedFilter}`
+                  : "Retrieving from all indexed course materials"}
+              </p>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             {/* Dynamic Model Selector Dropdown */}
             <div className="relative" ref={modelDropdownRef}>
               <button
                 onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900/90 hover:bg-slate-800/90 border border-slate-700/70 text-xs text-slate-200 transition-colors shadow-sm"
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.1] text-xs text-[#F4F4F5] transition-colors shadow-sm cursor-pointer"
                 title="Select Gemini Model"
               >
-                <Cpu className="w-3.5 h-3.5 text-indigo-400" />
-                <span className="font-medium text-[11px] max-w-[130px] truncate">
+                <Cpu className="w-3.5 h-3.5 text-[#3B82F6]" />
+                <span className="font-medium text-[11px] max-w-[90px] sm:max-w-[130px] truncate">
                   {currentModelObj?.display_name || selectedModel || "Gemini Model"}
                 </span>
                 {currentModelObj && (
-                  <span className={`text-[9px] px-1.5 py-0.5 rounded border font-mono font-medium ${
+                  <span className={`hidden sm:inline-block text-[9px] px-1.5 py-0.5 rounded border font-mono font-medium ${
                     currentModelObj.category === "fast"
                       ? "bg-amber-500/10 text-amber-300 border-amber-500/20"
                       : currentModelObj.category === "reasoning"
-                      ? "bg-purple-500/10 text-purple-300 border-purple-500/20"
+                      ? "bg-[#3B82F6]/10 text-[#93C5FD] border-[#3B82F6]/20"
                       : currentModelObj.category === "preview"
                       ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/20"
                       : "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
@@ -1004,17 +1107,17 @@ export function AITutor() {
                     {currentModelObj.category.toUpperCase()}
                   </span>
                 )}
-                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${isModelDropdownOpen ? "rotate-180" : ""}`} />
+                <ChevronDown className={`w-3.5 h-3.5 text-[#71717A] transition-transform duration-200 ${isModelDropdownOpen ? "rotate-180" : ""}`} />
               </button>
 
               {/* Dropdown Menu */}
               {isModelDropdownOpen && (
-                <div className="absolute right-0 top-full mt-2 w-96 rounded-xl bg-[#090d16] border border-slate-700/80 shadow-2xl z-50 overflow-hidden flex flex-col">
+                <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 rounded-xl bg-[#111319] border border-white/[0.14] shadow-2xl z-50 overflow-hidden flex flex-col">
                   {/* Dropdown Header */}
-                  <div className="p-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/60">
+                  <div className="p-3 border-b border-white/[0.08] flex items-center justify-between bg-white/[0.02]">
                     <div className="flex items-center gap-2">
-                      <Cpu className="w-4 h-4 text-indigo-400" />
-                      <span className="text-xs font-semibold text-white tracking-wide uppercase">Gemini Models</span>
+                      <Cpu className="w-4 h-4 text-[#3B82F6]" />
+                      <span className="text-xs font-semibold text-[#F4F4F5] tracking-wide uppercase">Gemini Models</span>
                     </div>
                     <button
                       onClick={(e) => {
@@ -1023,15 +1126,15 @@ export function AITutor() {
                       }}
                       disabled={isRefreshingModels}
                       title="Refresh available models from Google API"
-                      className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-50"
+                      className="p-1.5 rounded-md hover:bg-white/[0.06] text-[#A1A1AA] hover:text-[#F4F4F5] transition-colors disabled:opacity-50 cursor-pointer"
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingModels ? "animate-spin text-indigo-400" : ""}`} />
+                      <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingModels ? "animate-spin text-[#3B82F6]" : ""}`} />
                     </button>
                   </div>
 
                   {/* Routing Info Banner */}
                   {activeRouting.rewrite && (
-                    <div className="px-3 py-1.5 bg-indigo-950/20 border-b border-indigo-900/30 text-[10px] text-indigo-300 flex items-center justify-between font-mono">
+                    <div className="px-3 py-1.5 bg-[#3B82F6]/10 border-b border-[#3B82F6]/20 text-[10px] text-[#93C5FD] flex items-center justify-between font-mono">
                       <span>Rewriter: {activeRouting.rewrite}</span>
                       <span>Active: {selectedModel}</span>
                     </div>
@@ -1040,7 +1143,7 @@ export function AITutor() {
                   {/* Model Items List */}
                   <div className="max-h-72 overflow-y-auto p-1.5 space-y-1">
                     {models.length === 0 ? (
-                      <div className="p-4 text-center text-xs text-slate-400">
+                      <div className="p-4 text-center text-xs text-[#71717A]">
                         {isRefreshingModels ? "Loading available models..." : "No Gemini models discovered."}
                       </div>
                     ) : (
@@ -1050,20 +1153,20 @@ export function AITutor() {
                           <button
                             key={model.id}
                             onClick={() => handleSelectModel(model.id)}
-                            className={`w-full text-left p-2.5 rounded-lg border transition-all flex items-start justify-between gap-2.5 ${
+                            className={`w-full text-left p-2.5 rounded-lg border transition-all flex items-start justify-between gap-2.5 cursor-pointer ${
                               isSelected
-                                ? "bg-indigo-950/40 border-indigo-500/50 text-white"
-                                : "bg-slate-900/40 border-transparent hover:bg-slate-800/60 hover:border-slate-700/60 text-slate-300"
+                                ? "bg-[#3B82F6]/15 border-[#3B82F6]/40 text-[#F4F4F5]"
+                                : "bg-white/[0.02] border-transparent hover:bg-white/[0.05] hover:border-white/[0.08] text-[#A1A1AA]"
                             }`}
                           >
                             <div className="min-w-0 flex-1 space-y-1">
                               <div className="flex items-center gap-2">
-                                <span className="text-xs font-medium text-white truncate">{model.display_name}</span>
+                                <span className="text-xs font-medium text-[#F4F4F5] truncate">{model.display_name}</span>
                                 <span className={`text-[9px] px-1.5 py-0.2 rounded border font-mono font-medium ${
                                   model.category === "fast"
                                     ? "bg-amber-500/10 text-amber-300 border-amber-500/20"
                                     : model.category === "reasoning"
-                                    ? "bg-purple-500/10 text-purple-300 border-purple-500/20"
+                                    ? "bg-[#3B82F6]/10 text-[#93C5FD] border-[#3B82F6]/20"
                                     : model.category === "preview"
                                     ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/20"
                                     : "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
@@ -1071,20 +1174,20 @@ export function AITutor() {
                                   {model.category.toUpperCase()}
                                 </span>
                                 {model.is_default && (
-                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 border border-slate-700 font-mono">
+                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-white/[0.06] text-[#A1A1AA] border border-white/[0.08] font-mono">
                                     DEFAULT
                                   </span>
                                 )}
                               </div>
                               {model.description && (
-                                <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
+                                <p className="text-[11px] text-[#A1A1AA] line-clamp-2 leading-relaxed">
                                   {model.description}
                                 </p>
                               )}
-                              <p className="text-[10px] text-slate-500 font-mono truncate">{model.id}</p>
+                              <p className="text-[10px] text-[#71717A] font-mono truncate">{model.id}</p>
                             </div>
                             {isSelected && (
-                              <div className="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0 mt-0.5 border border-indigo-500/40">
+                              <div className="w-5 h-5 rounded-full bg-[#3B82F6]/20 text-[#3B82F6] flex items-center justify-center shrink-0 mt-0.5 border border-[#3B82F6]/40">
                                 <Check className="w-3 h-3" />
                               </div>
                             )}
@@ -1100,30 +1203,30 @@ export function AITutor() {
             {/* Quick New Chat Button */}
             <button
               onClick={handleStartNewChat}
-              className="text-xs text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-900/40 shadow-sm"
+              className="text-xs text-[#F4F4F5] hover:text-white transition-colors flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/[0.1] hover:border-white/[0.16] bg-white/[0.04] shadow-sm cursor-pointer"
               title="Start a new chat thread"
             >
-              <Plus className="w-3 h-3 text-indigo-400" />
-              <span>New Chat</span>
+              <Plus className="w-3 h-3 text-[#3B82F6]" />
+              <span className="hidden sm:inline">New Chat</span>
             </button>
           </div>
         </div>
 
         {/* Message Thread */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
           {isLoadingActiveConversation ? (
-            <div className="h-full flex flex-col items-center justify-center text-center space-y-2 text-slate-400">
-              <Loader2 className="w-6 h-6 animate-spin text-indigo-400" />
+            <div className="h-full flex flex-col items-center justify-center text-center space-y-2 text-[#71717A]">
+              <Loader2 className="w-6 h-6 animate-spin text-[#3B82F6]" />
               <p className="text-xs">Loading conversation history...</p>
             </div>
           ) : messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto space-y-4">
-              <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center">
+              <div className="w-12 h-12 rounded-xl bg-[#3B82F6]/15 border border-[#3B82F6]/30 text-[#3B82F6] flex items-center justify-center shadow-[0_0_24px_-6px_rgba(59,130,246,0.4)]">
                 <Sparkles className="w-6 h-6" />
               </div>
-              <div className="space-y-1">
-                <h3 className="text-sm font-semibold text-white">Curriculum-Grounded Question Answering</h3>
-                <p className="text-xs text-slate-400 leading-relaxed">
+              <div className="space-y-1.5">
+                <h3 className="text-sm font-semibold text-[#F4F4F5]">Curriculum-Grounded Learning Assistant</h3>
+                <p className="text-xs text-[#A1A1AA] leading-relaxed">
                   Ask questions about algorithms, system architectures, or language rules found in your uploaded materials.
                   Every answer provides verifiable citations and strictly avoids hallucination.
                 </p>
@@ -1131,23 +1234,23 @@ export function AITutor() {
 
               {documents.length > 0 && (
                 <div className="w-full space-y-2 pt-2">
-                  <p className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 text-left">
+                  <p className="text-[11px] uppercase tracking-wider font-semibold text-[#71717A] text-left">
                     Suggested Questions
                   </p>
                   <div className="space-y-1.5 text-left">
                     <button
                       onClick={() => setInputQuery("What are the key concepts and topics covered in this material?")}
-                      className="w-full p-2.5 rounded-lg bg-slate-900/60 hover:bg-slate-800/80 border border-slate-800 text-xs text-slate-300 text-left transition-colors flex items-center justify-between"
+                      className="w-full p-2.5 rounded-lg bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.08] hover:border-white/[0.14] text-xs text-[#F4F4F5] text-left transition-colors flex items-center justify-between cursor-pointer"
                     >
                       <span>What are the key concepts and topics covered in this material?</span>
-                      <ChevronRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      <ChevronRight className="w-3.5 h-3.5 text-[#71717A] shrink-0" />
                     </button>
                     <button
                       onClick={() => setInputQuery("Explain the time and space complexity trade-offs discussed.")}
-                      className="w-full p-2.5 rounded-lg bg-slate-900/60 hover:bg-slate-800/80 border border-slate-800 text-xs text-slate-300 text-left transition-colors flex items-center justify-between"
+                      className="w-full p-2.5 rounded-lg bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.08] hover:border-white/[0.14] text-xs text-[#F4F4F5] text-left transition-colors flex items-center justify-between cursor-pointer"
                     >
                       <span>Explain the time and space complexity trade-offs discussed.</span>
-                      <ChevronRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      <ChevronRight className="w-3.5 h-3.5 text-[#71717A] shrink-0" />
                     </button>
                   </div>
                 </div>
@@ -1157,41 +1260,41 @@ export function AITutor() {
             messages.map((msg) => (
               <div
                 key={msg.id}
-                className={`flex flex-col ${msg.sender === "user" ? "items-end" : "items-start"}`}
+                className={`flex flex-col ${msg.sender === "user" ? "items-end" : "items-start"} animate-cp-fade-up`}
               >
                 <div className="flex items-center gap-2 mb-1 px-1">
-                  <span className="text-[10px] font-medium text-slate-400">
+                  <span className="text-[10px] font-medium text-[#A1A1AA]">
                     {msg.sender === "user" ? "You" : "AI Learning Assistant"}
                   </span>
                   {msg.sender === "assistant" && msg.modelUsed && (
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800/90 text-indigo-300 font-mono border border-slate-700/60">
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/[0.06] text-[#93C5FD] font-mono border border-white/[0.08]">
                       {msg.modelUsed}
                     </span>
                   )}
-                  <span className="text-[10px] text-slate-600">{msg.timestamp}</span>
+                  <span className="text-[10px] text-[#71717A]">{msg.timestamp}</span>
                 </div>
 
                 <div
-                  className={`max-w-[85%] rounded-xl p-4 text-xs leading-relaxed ${
+                  className={`max-w-[85%] rounded-2xl p-4 text-xs leading-relaxed ${
                     msg.sender === "user"
-                      ? "bg-indigo-600 text-white rounded-tr-sm shadow-sm"
+                      ? "bg-[#3B82F6] text-[#F4F4F5] rounded-tr-sm shadow-md"
                       : msg.isError
-                      ? "bg-[#181119] text-rose-200 border border-rose-900/50 rounded-tl-sm space-y-3.5 shadow-sm"
-                      : "bg-[#0f1422] text-slate-200 border border-slate-800/90 rounded-tl-sm space-y-3.5 shadow-sm"
+                      ? "bg-red-950/20 text-red-200 border border-red-900/40 rounded-tl-sm space-y-3.5 shadow-md"
+                      : "bg-[#181C25] text-[#F4F4F5] border border-[#272B36] rounded-tl-sm space-y-3.5 shadow-sm"
                   }`}
                 >
                   {msg.sender === "user" ? (
                     <UserMessage content={msg.text} />
                   ) : msg.isError ? (
                     <div className="space-y-3">
-                      <div className="flex items-start gap-2.5 text-rose-300">
-                        <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                      <div className="flex items-start gap-2.5 text-red-300">
+                        <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
                         <div className="flex-1 text-xs leading-relaxed">{msg.text}</div>
                       </div>
                       <button
                         onClick={() => handleRetry(msg.id)}
                         disabled={isQuerying}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-medium transition-colors disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 text-[11px] font-medium transition-colors disabled:opacity-50 cursor-pointer"
                       >
                         <RotateCcw className="w-3.5 h-3.5" />
                         <span>Retry Request</span>
@@ -1203,7 +1306,7 @@ export function AITutor() {
 
                   {/* Insufficient Context Alert - strictly excluded on provider errors */}
                   {!msg.isError && msg.insufficientContext && msg.sender === "assistant" && (
-                    <div className="p-2.5 rounded-lg bg-amber-950/30 border border-amber-800/40 text-amber-300 text-[11px] flex items-center gap-2">
+                    <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] flex items-center gap-2">
                       <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                       <span>Context is insufficient in current material. Refusing to speculate.</span>
                     </div>
@@ -1211,12 +1314,12 @@ export function AITutor() {
 
                   {/* Citations Box */}
                   {msg.citations && msg.citations.length > 0 && (
-                    <div className="pt-3 border-t border-slate-800/80 space-y-2">
+                    <div className="pt-3 border-t border-white/[0.08] space-y-2.5">
                       <div className="flex items-center justify-between">
-                        <p className="text-[10px] uppercase font-semibold text-indigo-300 flex items-center gap-1.5 tracking-wider">
-                          <FileText className="w-3 h-3 text-indigo-400" /> Grounded Source Citations
+                        <p className="text-[10px] uppercase font-semibold text-[#3B82F6] flex items-center gap-1.5 tracking-wider">
+                          <FileText className="w-3 h-3 text-[#3B82F6]" /> Grounded Source Citations
                         </p>
-                        <span className="text-[10px] text-slate-400 font-mono">
+                        <span className="text-[10px] text-[#A1A1AA] font-mono">
                           {msg.citations.length} {msg.citations.length === 1 ? "source" : "sources"}
                         </span>
                       </div>
@@ -1224,17 +1327,17 @@ export function AITutor() {
                         {msg.citations.map((c, idx) => (
                           <div
                             key={idx}
-                            className="p-2.5 rounded-lg bg-[#070a12] border border-slate-800/80 hover:border-slate-700/80 text-[11px] space-y-1.5 transition-colors"
+                            className="p-3 rounded-xl bg-[#080A10]/80 border border-white/[0.08] hover:border-[#3B82F6]/40 text-[11px] space-y-1.5 transition-all duration-150 shadow-sm"
                           >
-                            <div className="flex items-center justify-between text-[10px] font-medium text-indigo-400">
-                              <span className="truncate max-w-[150px] font-mono text-slate-300" title={c.document_name}>
+                            <div className="flex items-center justify-between gap-1 text-[10px] font-medium text-[#93C5FD]">
+                              <span className="truncate max-w-[150px] font-mono text-[#F4F4F5]" title={c.document_name}>
                                 {c.document_name}
                               </span>
-                              <span className="px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/25 text-indigo-300 font-mono text-[10px] font-medium">
+                              <Badge variant="ai" size="sm">
                                 Page {c.page_number}
-                              </span>
+                              </Badge>
                             </div>
-                            <p className="text-slate-400 text-[11px] line-clamp-3 italic leading-relaxed">
+                            <p className="text-[#A1A1AA] text-[11px] line-clamp-3 italic leading-relaxed">
                               &ldquo;{c.snippet}&rdquo;
                             </p>
                           </div>
@@ -1248,10 +1351,10 @@ export function AITutor() {
           )}
 
           {isQuerying && (
-            <div className="flex flex-col items-start space-y-1">
-              <span className="text-[10px] font-medium text-slate-400 px-1">AI Learning Assistant</span>
-              <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center gap-2.5 text-xs text-indigo-300">
-                <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+            <div className="flex flex-col items-start space-y-1 animate-cp-fade-in">
+              <span className="text-[10px] font-medium text-[#A1A1AA] px-1">AI Learning Assistant</span>
+              <div className="p-3.5 rounded-xl bg-[#181C25] border border-[#272B36] flex items-center gap-2.5 text-xs text-[#93C5FD] shadow-sm">
+                <Loader2 className="w-4 h-4 animate-spin text-[#3B82F6]" />
                 <span>Searching vector database & grounding response...</span>
               </div>
             </div>
@@ -1261,7 +1364,7 @@ export function AITutor() {
         </div>
 
         {/* Chat Composer Bar */}
-        <div className="p-3.5 sm:p-4 border-t border-slate-800/80 bg-[#070a12]/70">
+        <div className="p-3 sm:p-4 border-t border-white/[0.08] bg-white/[0.015]">
           <ChatComposer
             value={inputQuery}
             onChange={setInputQuery}

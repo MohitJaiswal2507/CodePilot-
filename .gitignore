@@ -1,4 +1,4 @@
-# Antigravity internal configuration
+#internal configuration
 .agents/
 .agent/
 .agents.md
@@ -86,3 +86,10 @@ local_data/
 # Evaluation artifacts & temporary vector stores
 backend/evals/results/
 backend/evals/tmp_chroma/
+
+# Local UI screenshots
+screenshot/
+screenshots/
+
+DESIGN.md
+PRODUCT.md

@@ -1,331 +1,682 @@
 "use client";
 
-import React, { useState } from "react";
-import { 
-  BookOpen, 
-  Code2, 
-  Terminal, 
-  CheckCircle2, 
-  ArrowRight, 
-  Layers, 
-  Sparkles,
-  Server,
-  Send,
-  ShieldAlert
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ArrowRight,
+  BookOpen,
+  Code2,
+  FileText,
+  MessageSquare,
+  RefreshCw,
+  Terminal,
 } from "lucide-react";
+import { authClient } from "@/lib/auth/client";
+import { AppTab } from "@/lib/navigation";
+import {
+  CodeReviewHistoryItem,
+  ConversationSummary,
+  DocumentSummary,
+  HealthStatus,
+  fetchBackendHealth,
+  fetchCodeReviewHistory,
+  fetchConversations,
+  fetchDocuments,
+} from "@/services/api";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  ErrorState,
+  SectionHeader,
+  Skeleton,
+  SkeletonCard,
+} from "@/components/ui";
 
-export function DashboardOverview({ onNavigate }: { onNavigate: (tab: string) => void }) {
-  const [tutorQuery, setTutorQuery] = useState("");
-  const [reviewCode] = useState(
-    `def binary_search(arr, target):\n    left, right = 0, len(arr) - 1\n    while left <= right:\n        mid = (left + right) // 2\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            left = mid + 1\n        else:\n            right = mid - 1\n    return -1`
-  );
+interface DashboardOverviewProps {
+  onNavigate: (tab: AppTab) => void;
+}
+
+interface AsyncSlice<T> {
+  data: T;
+  loading: boolean;
+  error: string | null;
+}
+
+interface ActivityEntry {
+  id: string;
+  type: "conversation" | "document" | "review";
+  title: string;
+  meta: string;
+  timestamp: string;
+  targetTab: AppTab;
+  conversationId?: string;
+}
+
+function formatRelativeTime(isoDate: string): string {
+  const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) return "Unknown";
+
+  const diffSeconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (diffSeconds < 60) return "Just now";
+  if (diffSeconds < 3600) return `${Math.floor(diffSeconds / 60)}m ago`;
+  if (diffSeconds < 86400) return `${Math.floor(diffSeconds / 3600)}h ago`;
+  if (diffSeconds < 604800) return `${Math.floor(diffSeconds / 86400)}d ago`;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+export function DashboardOverview({ onNavigate }: DashboardOverviewProps) {
+  const sessionHook =
+    typeof authClient?.useSession === "function"
+      ? authClient.useSession()
+      : { data: null, isPending: false };
+  const userName = sessionHook?.data?.user?.name?.trim() || "";
+  const firstName = userName ? userName.split(/\s+/)[0] : "";
+
+  // Client-only formatted date to avoid SSR hydration mismatch
+  const [formattedDate, setFormattedDate] = useState<string>("");
+
+  const [healthState, setHealthState] = useState<AsyncSlice<HealthStatus | null>>({
+    data: null,
+    loading: true,
+    error: null,
+  });
+  const [conversationsState, setConversationsState] = useState<
+    AsyncSlice<{ items: ConversationSummary[]; total: number }>
+  >({
+    data: { items: [], total: 0 },
+    loading: true,
+    error: null,
+  });
+  const [documentsState, setDocumentsState] = useState<
+    AsyncSlice<{ items: DocumentSummary[]; total: number }>
+  >({
+    data: { items: [], total: 0 },
+    loading: true,
+    error: null,
+  });
+  const [reviewsState, setReviewsState] = useState<
+    AsyncSlice<{ items: CodeReviewHistoryItem[]; total: number }>
+  >({
+    data: { items: [], total: 0 },
+    loading: true,
+    error: null,
+  });
+
+  const loadDashboardData = useCallback(async () => {
+    setHealthState((prev) => ({ ...prev, loading: true, error: null }));
+    setConversationsState((prev) => ({ ...prev, loading: true, error: null }));
+    setDocumentsState((prev) => ({ ...prev, loading: true, error: null }));
+    setReviewsState((prev) => ({ ...prev, loading: true, error: null }));
+
+    const [healthRes, convRes, docRes, revRes] = await Promise.allSettled([
+      fetchBackendHealth(),
+      fetchConversations(10, 0),
+      fetchDocuments(),
+      fetchCodeReviewHistory(10, 0),
+    ]);
+
+    if (healthRes.status === "fulfilled") {
+      setHealthState({ data: healthRes.value, loading: false, error: null });
+    } else {
+      setHealthState({
+        data: null,
+        loading: false,
+        error: "Unable to check backend health.",
+      });
+    }
+
+    if (convRes.status === "fulfilled") {
+      setConversationsState({
+        data: {
+          items: convRes.value.conversations || [],
+          total: convRes.value.total ?? (convRes.value.conversations?.length || 0),
+        },
+        loading: false,
+        error: null,
+      });
+    } else {
+      setConversationsState({
+        data: { items: [], total: 0 },
+        loading: false,
+        error:
+          convRes.reason instanceof Error
+            ? convRes.reason.message
+            : "Failed to load conversations.",
+      });
+    }
+
+    if (docRes.status === "fulfilled") {
+      setDocumentsState({
+        data: {
+          items: docRes.value.documents || [],
+          total: docRes.value.total_documents ?? (docRes.value.documents?.length || 0),
+        },
+        loading: false,
+        error: null,
+      });
+    } else {
+      setDocumentsState({
+        data: { items: [], total: 0 },
+        loading: false,
+        error:
+          docRes.reason instanceof Error
+            ? docRes.reason.message
+            : "Failed to load uploaded documents.",
+      });
+    }
+
+    if (revRes.status === "fulfilled") {
+      setReviewsState({
+        data: {
+          items: revRes.value.reviews || [],
+          total: revRes.value.total ?? (revRes.value.reviews?.length || 0),
+        },
+        loading: false,
+        error: null,
+      });
+    } else {
+      setReviewsState({
+        data: { items: [], total: 0 },
+        loading: false,
+        error:
+          revRes.reason instanceof Error
+            ? revRes.reason.message
+            : "Failed to load code review history.",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    setFormattedDate(
+      new Date().toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "short",
+        day: "numeric",
+      })
+    );
+    loadDashboardData();
+  }, [loadDashboardData]);
+
+  const handleOpenConversation = (conversationId: string) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("codepilot_active_conv_id", conversationId);
+    }
+    onNavigate("ai-tutor");
+  };
+
+  const recentActivity = useMemo<ActivityEntry[]>(() => {
+    const entries: ActivityEntry[] = [];
+
+    for (const conv of conversationsState.data.items) {
+      entries.push({
+        id: `conv-${conv.id}`,
+        type: "conversation",
+        title: conv.title || "Untitled conversation",
+        meta: `${conv.message_count} ${conv.message_count === 1 ? "message" : "messages"}`,
+        timestamp: conv.updated_at,
+        targetTab: "ai-tutor",
+        conversationId: conv.id,
+      });
+    }
+
+    for (const doc of documentsState.data.items) {
+      entries.push({
+        id: `doc-${doc.document_name}`,
+        type: "document",
+        title: doc.document_name,
+        meta: `${doc.total_pages} ${doc.total_pages === 1 ? "page" : "pages"} • ${doc.total_chunks} chunks`,
+        timestamp: doc.uploaded_at,
+        targetTab: "ai-tutor",
+      });
+    }
+
+    for (const rev of reviewsState.data.items) {
+      entries.push({
+        id: `rev-${rev.id}`,
+        type: "review",
+        title: `${rev.language.toUpperCase()} Review (${rev.quality_score}/10)`,
+        meta: rev.summary || rev.code_snippet,
+        timestamp: rev.created_at,
+        targetTab: "code-review",
+      });
+    }
+
+    return entries
+      .sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      )
+      .slice(0, 6);
+  }, [
+    conversationsState.data.items,
+    documentsState.data.items,
+    reviewsState.data.items,
+  ]);
+
+  const isAnyLoading =
+    healthState.loading ||
+    conversationsState.loading ||
+    documentsState.loading ||
+    reviewsState.loading;
+
+  const firstError =
+    conversationsState.error || documentsState.error || reviewsState.error;
+
+  const quickActions: {
+    tab: AppTab;
+    title: string;
+    description: string;
+    cta: string;
+    icon: React.ComponentType<{ className?: string }>;
+  }[] = [
+    {
+      tab: "ai-tutor",
+      title: "AI Learning Tutor",
+      description:
+        "Ask curriculum-grounded questions and explore explanations cited from your uploaded PDFs.",
+      cta: "Open AI Tutor",
+      icon: BookOpen,
+    },
+    {
+      tab: "code-review",
+      title: "Code Reviewer",
+      description:
+        "Run multi-stage static analysis, Big-O complexity derivation, and edge-case checks.",
+      cta: "Review Code",
+      icon: Code2,
+    },
+    {
+      tab: "sandbox",
+      title: "Code Sandbox",
+      description:
+        "Compile and execute Python, Java, and C++ programs inside an isolated Docker container.",
+      cta: "Open Sandbox",
+      icon: Terminal,
+    },
+  ];
+
+  const healthBadgeVariant =
+    healthState.data?.status === "healthy"
+      ? "success"
+      : healthState.data?.status === "unhealthy"
+      ? "warning"
+      : "danger";
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto pb-12">
-      {/* Welcome Banner */}
-      <div className="relative overflow-hidden rounded-xl border border-slate-800 bg-gradient-to-r from-slate-900/90 via-[#0d1322] to-slate-900/90 p-6">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1.5">
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-medium">
-              <Sparkles className="w-3 h-3" /> Intelligent Developer Copilot
-            </div>
-            <h2 className="text-xl font-bold text-white tracking-tight">
-              CodePilot AI — Learning & Automated Code Review
-            </h2>
-            <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
-              Curriculum-grounded computer science learning, automated multi-language code review,
-              and isolated test execution in a single unified platform.
+    <div className="space-y-8">
+      {/* A. Welcome Header */}
+      <section className="rounded-xl border border-[#272B36] bg-[#111319] p-6 sm:p-7">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="space-y-1">
+            <h1 className="text-xl sm:text-2xl font-semibold text-[#FAFAFA] tracking-tight">
+              {firstName ? `Welcome back, ${firstName}` : "Welcome back"}
+            </h1>
+            <p className="text-xs sm:text-sm text-[#A1A1AA] max-w-2xl leading-relaxed">
+              Study from course materials, review code with AI diagnostics, and test solutions in an isolated sandbox.
             </p>
           </div>
+
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => onNavigate("ai-tutor")}
-              className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-sm transition-colors flex items-center gap-2"
-            >
-              <BookOpen className="w-3.5 h-3.5" />
-              <span>Explore AI Tutor</span>
-            </button>
-            <button
-              onClick={() => onNavigate("code-review")}
-              className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-colors flex items-center gap-2"
-            >
-              <Code2 className="w-3.5 h-3.5" />
-              <span>Review Code</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Metrics Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="p-4 rounded-xl border border-slate-800/80 bg-slate-900/40">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-400">Backend Service</span>
-            <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-              <Server className="w-3.5 h-3.5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <p className="text-xl font-bold text-white">FastAPI Engine</p>
-            <p className="text-[11px] text-emerald-400 mt-0.5 flex items-center gap-1">
-              <CheckCircle2 className="w-3 h-3" /> Live & Responding
-            </p>
-          </div>
-        </div>
-
-        <div className="p-4 rounded-xl border border-slate-800/80 bg-slate-900/40">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-400">Curriculum Grounding</span>
-            <div className="w-7 h-7 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-              <BookOpen className="w-3.5 h-3.5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <p className="text-xl font-bold text-white">Syllabus Q&A</p>
-            <p className="text-[11px] text-slate-400 mt-0.5">Strict citation verification</p>
-          </div>
-        </div>
-
-        <div className="p-4 rounded-xl border border-slate-800/80 bg-slate-900/40">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-400">Automated Review</span>
-            <div className="w-7 h-7 rounded-lg bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-              <Code2 className="w-3.5 h-3.5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <p className="text-xl font-bold text-white">Python, Java, C++</p>
-            <p className="text-[11px] text-slate-400 mt-0.5">Complexity & bug detection</p>
-          </div>
-        </div>
-
-        <div className="p-4 rounded-xl border border-slate-800/80 bg-slate-900/40">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-400">Execution Sandbox</span>
-            <div className="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-              <Terminal className="w-3.5 h-3.5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <p className="text-xl font-bold text-white">Secure Runtime</p>
-            <p className="text-[11px] text-slate-400 mt-0.5">Isolated test runner</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Grid: AI Tutor & Code Review Previews */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* AI Tutor Section */}
-        <div className="rounded-xl border border-slate-800/80 bg-[#0d121f] p-5 flex flex-col justify-between">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="w-7 h-7 rounded bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-                  <BookOpen className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-white">AI Learning Tutor</h3>
-                  <p className="text-[11px] text-slate-400">Curriculum-grounded syllabus Q&A</p>
-                </div>
-              </div>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-indigo-300 border border-slate-700">
-                Syllabus Citations
+            {formattedDate && (
+              <span className="text-xs text-[#71717A] hidden md:inline">
+                {formattedDate}
               </span>
-            </div>
-
-            {/* Interaction Box */}
-            <div className="space-y-3">
-              <div className="p-3 rounded-lg bg-slate-900/80 border border-slate-800/80 text-xs space-y-1.5">
-                <div className="flex items-center justify-between text-slate-400 text-[10px]">
-                  <span className="font-semibold text-indigo-400">Sample Query</span>
-                  <span>Course Material: Data Structures & Algorithms</span>
-                </div>
-                <p className="text-slate-300">
-                  &ldquo;Explain the difference between an AVL Tree and a Red-Black Tree in terms of worst-case lookup vs insertion rotations.&rdquo;
-                </p>
-              </div>
-
-              <div className="p-3.5 rounded-lg bg-indigo-950/20 border border-indigo-800/40 text-xs space-y-2">
-                <div className="flex items-center gap-2 text-indigo-300 font-medium text-[11px]">
-                  <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>Grounding Standard:</span>
-                </div>
-                <p className="text-slate-400 text-[11px] leading-relaxed">
-                  Every response includes exact textbook citations
-                  <span className="text-indigo-300 font-mono text-[10px] ml-1">
-                    [Doc: Trees_Unit3.pdf, Page: 42]
-                  </span>
-                  and contextual check questions to verify conceptual understanding.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-5 pt-3 border-t border-slate-800/80">
-            <div className="relative flex items-center">
-              <input
-                type="text"
-                value={tutorQuery}
-                onChange={(e) => setTutorQuery(e.target.value)}
-                placeholder="Ask a computer science concept or algorithm question..."
-                className="w-full bg-slate-900/60 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-300 placeholder-slate-500 focus:outline-none focus:border-indigo-500/50"
-              />
-              <button
-                onClick={() => onNavigate("ai-tutor")}
-                className="absolute right-1.5 p-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
-                title="Send query to AI Tutor"
-              >
-                <Send className="w-3 h-3" />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Code Reviewer Section */}
-        <div className="rounded-xl border border-slate-800/80 bg-[#0d121f] p-5 flex flex-col justify-between">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="w-7 h-7 rounded bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-                  <Code2 className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-white">AI Code Reviewer</h3>
-                  <p className="text-[11px] text-slate-400">Multi-language static & asymptotic analysis</p>
-                </div>
-              </div>
-              <div className="flex gap-1 text-[10px] font-mono">
-                <span className="px-1.5 py-0.5 rounded bg-cyan-950/40 text-cyan-300 border border-cyan-800/40">Python</span>
-                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">Java</span>
-                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">C++</span>
-              </div>
-            </div>
-
-            {/* Code Snippet Box */}
-            <div className="rounded-lg bg-[#070b13] border border-slate-800/90 p-3 font-mono text-[11px] text-slate-300 space-y-1 overflow-x-auto">
-              <div className="text-slate-400 text-[10px] pb-1 border-b border-slate-800 flex justify-between">
-                <span>binary_search.py</span>
-                <span className="text-emerald-400 font-mono">Target Complexity: O(log N)</span>
-              </div>
-              <pre className="pt-2 text-indigo-300/90 leading-relaxed font-mono">
-                {reviewCode}
-              </pre>
-            </div>
-
-            {/* Review Badges */}
-            <div className="p-3 rounded-lg bg-slate-900/60 border border-slate-800/60 flex items-center justify-between text-xs">
-              <div className="flex items-center gap-3">
-                <span className="text-[11px] text-slate-400">Time:</span>
-                <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono text-[10px]">
-                  O(log N)
-                </span>
-                <span className="text-[11px] text-slate-400">Space:</span>
-                <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono text-[10px]">
-                  O(1)
-                </span>
-              </div>
-              <span className="text-[10px] text-slate-400 font-mono">Asymptotic Proof Engine</span>
-            </div>
-          </div>
-
-          <div className="mt-5 pt-3 border-t border-slate-800/80">
-            <button
-              onClick={() => onNavigate("code-review")}
-              className="w-full py-2 rounded-lg bg-slate-800/60 hover:bg-slate-800 text-slate-300 text-xs font-medium transition-colors flex items-center justify-center gap-2 border border-slate-700/60"
+            )}
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={loadDashboardData}
+              isLoading={isAnyLoading}
+              leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+              className="self-start sm:self-auto"
             >
-              <span>Open Code Reviewer</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+              Refresh
+            </Button>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Recent Activity & System Status */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Activity Timeline */}
-        <div className="lg:col-span-2 rounded-xl border border-slate-800/80 bg-[#0d121f] p-5">
-          <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-800/80">
-            <h3 className="text-xs font-semibold text-white uppercase tracking-wider">
-              Recent Platform Activity
-            </h3>
-            <span className="text-[10px] text-emerald-400 font-medium">All Systems Operational</span>
-          </div>
+      {/* B. Quick Actions */}
+      <section
+        className="space-y-3 animate-cp-fade-up"
+        style={{ animationDelay: "50ms" }}
+      >
+        <SectionHeader
+          title="Quick Actions"
+          description="Jump directly into a workspace tool."
+        />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {quickActions.map((action) => {
+            const Icon = action.icon;
+            return (
+              <Card
+                key={action.tab}
+                interactive
+                padding="lg"
+                className="flex flex-col justify-between gap-5 bg-[#111319] hover:bg-[#151821] border-[#272B36] hover:border-[#373D4D]"
+              >
+                <div className="space-y-3.5">
+                  <div className="w-9 h-9 rounded-md bg-[#181C25] border border-[#272B36] flex items-center justify-center text-[#3B82F6]">
+                    <Icon className="w-4 h-4" aria-hidden="true" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-semibold text-[#FAFAFA]">
+                      {action.title}
+                    </h3>
+                    <p className="text-xs text-[#A1A1AA] leading-relaxed">
+                      {action.description}
+                    </p>
+                  </div>
+                </div>
 
-          <div className="space-y-4">
-            <div className="flex items-start gap-3">
-              <div className="w-2 h-2 rounded-full bg-emerald-400 mt-1.5 shrink-0" />
-              <div className="space-y-0.5">
-                <p className="text-xs font-medium text-slate-200">
-                  Core API Gateway Connected
-                </p>
-                <p className="text-[11px] text-slate-400">
-                  FastAPI service synchronized with Next.js client with active CORS and health telemetry.
-                </p>
-                <span className="text-[10px] text-slate-400 font-mono">Active</span>
+                <div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => onNavigate(action.tab)}
+                    rightIcon={<ArrowRight className="w-3.5 h-3.5" />}
+                    className="w-full justify-between"
+                  >
+                    {action.cta}
+                  </Button>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* C. Overview Metrics */}
+      <section
+        className="space-y-3 animate-cp-fade-up"
+        style={{ animationDelay: "100ms" }}
+      >
+        <SectionHeader
+          title="Workspace Overview"
+          description="Live counts retrieved from your account and backend service."
+        />
+
+        {firstError && (
+          <ErrorState
+            title="Some workspace metrics could not be loaded"
+            message={firstError}
+            onRetry={loadDashboardData}
+          />
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Metric 1: Conversations */}
+          {conversationsState.loading ? (
+            <SkeletonCard />
+          ) : (
+            <Card elevated interactive padding="md" className="space-y-3">
+              <div className="flex items-center justify-between text-xs text-[#A1A1AA]">
+                <span>Conversations</span>
+                <div className="w-7 h-7 rounded-md bg-[#181C25] border border-[#272B36] flex items-center justify-center text-[#71717A]">
+                  <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
+                </div>
               </div>
-            </div>
+              <p className="text-3xl font-semibold text-[#FAFAFA] tabular-nums tracking-tight">
+                {conversationsState.error ? "—" : conversationsState.data.total}
+              </p>
+              <p className="text-[11px] text-[#71717A]">
+                {conversationsState.error
+                  ? "Unavailable"
+                  : conversationsState.data.total === 0
+                  ? "No chats started yet"
+                  : "Persisted AI Tutor threads"}
+              </p>
+            </Card>
+          )}
 
-            <div className="flex items-start gap-3">
-              <div className="w-2 h-2 rounded-full bg-indigo-400 mt-1.5 shrink-0" />
-              <div className="space-y-0.5">
-                <p className="text-xs font-medium text-slate-300">
-                  Health Telemetry Verified
-                </p>
-                <p className="text-[11px] text-slate-400">
-                  Real-time latency monitoring and service status ping operational.
-                </p>
-                <span className="text-[10px] text-slate-400 font-mono">Live</span>
+          {/* Metric 2: Uploaded Documents */}
+          {documentsState.loading ? (
+            <SkeletonCard />
+          ) : (
+            <Card elevated interactive padding="md" className="space-y-3">
+              <div className="flex items-center justify-between text-xs text-[#A1A1AA]">
+                <span>Uploaded PDFs</span>
+                <div className="w-7 h-7 rounded-md bg-[#181C25] border border-[#272B36] flex items-center justify-center text-[#71717A]">
+                  <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+                </div>
               </div>
-            </div>
+              <p className="text-3xl font-semibold text-[#FAFAFA] tabular-nums tracking-tight">
+                {documentsState.error ? "—" : documentsState.data.total}
+              </p>
+              <p className="text-[11px] text-[#71717A]">
+                {documentsState.error
+                  ? "Unavailable"
+                  : documentsState.data.total === 0
+                  ? "Upload a PDF in AI Tutor"
+                  : "Indexed in vector store"}
+              </p>
+            </Card>
+          )}
 
-            <div className="flex items-start gap-3">
-              <div className="w-2 h-2 rounded-full bg-slate-600 mt-1.5 shrink-0" />
-              <div className="space-y-0.5">
-                <p className="text-xs font-medium text-slate-300">
-                  Curriculum & Code Analysis Services
-                </p>
-                <p className="text-[11px] text-slate-400">
-                  Interactive learning assistant and multi-language review pipelines configured.
-                </p>
-                <span className="text-[10px] text-slate-400 font-mono">Configured</span>
+          {/* Metric 3: Code Reviews */}
+          {reviewsState.loading ? (
+            <SkeletonCard />
+          ) : (
+            <Card elevated interactive padding="md" className="space-y-3">
+              <div className="flex items-center justify-between text-xs text-[#A1A1AA]">
+                <span>Code Reviews</span>
+                <div className="w-7 h-7 rounded-md bg-[#181C25] border border-[#272B36] flex items-center justify-center text-[#71717A]">
+                  <Code2 className="w-3.5 h-3.5" aria-hidden="true" />
+                </div>
               </div>
-            </div>
-          </div>
+              <p className="text-3xl font-semibold text-[#FAFAFA] tabular-nums tracking-tight">
+                {reviewsState.error ? "—" : reviewsState.data.total}
+              </p>
+              <p className="text-[11px] text-[#71717A]">
+                {reviewsState.error
+                  ? "Unavailable"
+                  : reviewsState.data.total === 0
+                  ? "No reviews submitted yet"
+                  : "Completed AI analyses"}
+              </p>
+            </Card>
+          )}
+
+          {/* Metric 4: Backend Connection */}
+          {healthState.loading ? (
+            <SkeletonCard />
+          ) : (
+            <Card elevated interactive padding="md" className="space-y-3">
+              <div className="flex items-center justify-between text-xs text-[#A1A1AA]">
+                <span>Backend Service</span>
+                <Badge variant={healthBadgeVariant} size="sm" dot>
+                  {healthState.data?.status ?? "offline"}
+                </Badge>
+              </div>
+              <p className="text-3xl font-semibold text-[#FAFAFA] tabular-nums tracking-tight">
+                {healthState.data?.latencyMs !== undefined
+                  ? `${healthState.data.latencyMs} ms`
+                  : "—"}
+              </p>
+              <p className="text-[11px] text-[#71717A] truncate">
+                {healthState.data?.status === "healthy"
+                  ? `FastAPI v${healthState.data.version}`
+                  : healthState.data?.error || "Backend unreachable"}
+              </p>
+            </Card>
+          )}
+        </div>
+      </section>
+
+      {/* D & E. Recent Activity & Recent Conversations */}
+      <section
+        className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-cp-fade-up"
+        style={{ animationDelay: "150ms" }}
+      >
+        {/* E. Recent Conversations */}
+        <div className="lg:col-span-6 space-y-3">
+          <SectionHeader
+            title="Recent Conversations"
+            description="Reopen a saved AI Tutor thread."
+            actions={
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onNavigate("ai-tutor")}
+                rightIcon={<ArrowRight className="w-3 h-3" />}
+              >
+                View all
+              </Button>
+            }
+          />
+
+          <Card padding="none" className="overflow-hidden bg-[#111319] border-[#272B36]">
+            {conversationsState.loading ? (
+              <div className="p-4 space-y-3">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : conversationsState.error ? (
+              <div className="p-4">
+                <ErrorState
+                  message={conversationsState.error}
+                  onRetry={loadDashboardData}
+                />
+              </div>
+            ) : conversationsState.data.items.length === 0 ? (
+              <EmptyState
+                icon={<MessageSquare className="w-4 h-4" />}
+                title="No conversations yet"
+                description="Start a curriculum-grounded Q&A session in the AI Learning Tutor."
+                action={
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => onNavigate("ai-tutor")}
+                  >
+                    Start a Conversation
+                  </Button>
+                }
+                className="border-0 rounded-none bg-transparent"
+              />
+            ) : (
+              <ul className="divide-y divide-[#272B36]">
+                {conversationsState.data.items.slice(0, 5).map((conv) => (
+                  <li key={conv.id}>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenConversation(conv.id)}
+                      className="w-full px-4 py-3.5 flex items-center justify-between gap-3 text-left hover:bg-[#181C25] transition-colors duration-150 motion-reduce:transition-none cursor-pointer focus-visible:outline-none focus-visible:bg-[#181C25]"
+                    >
+                      <div className="min-w-0 space-y-1">
+                        <p className="text-xs font-medium text-[#FAFAFA] truncate">
+                          {conv.title || "Untitled conversation"}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#71717A]">
+                          <span>
+                            {conv.message_count}{" "}
+                            {conv.message_count === 1 ? "message" : "messages"}
+                          </span>
+                          {conv.document_filter && (
+                            <Badge variant="ai" size="sm">
+                              {conv.document_filter}
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      <span className="text-[11px] text-[#71717A] tabular-nums shrink-0">
+                        {formatRelativeTime(conv.updated_at)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
         </div>
 
-        {/* System Diagnostics */}
-        <div className="rounded-xl border border-slate-800/80 bg-[#0d121f] p-5">
-          <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-800/80">
-            <h3 className="text-xs font-semibold text-white uppercase tracking-wider">
-              System Status
-            </h3>
-            <Layers className="w-3.5 h-3.5 text-slate-400" />
-          </div>
+        {/* D. Recent Activity */}
+        <div className="lg:col-span-6 space-y-3">
+          <SectionHeader
+            title="Recent Activity"
+            description="Latest conversations, uploaded PDFs, and code reviews."
+          />
 
-          <div className="space-y-3 text-xs">
-            <div className="flex justify-between py-1.5 border-b border-slate-800/60">
-              <span className="text-slate-400">Web Client</span>
-              <span className="font-mono text-slate-200">Next.js 15 / React 19</span>
-            </div>
-            <div className="flex justify-between py-1.5 border-b border-slate-800/60">
-              <span className="text-slate-400">API Server</span>
-              <span className="font-mono text-slate-200">FastAPI / Python 3.13</span>
-            </div>
-            <div className="flex justify-between py-1.5 border-b border-slate-800/60">
-              <span className="text-slate-400">Design System</span>
-              <span className="font-mono text-slate-200">Tailwind CSS</span>
-            </div>
-            <div className="flex justify-between py-1.5 border-b border-slate-800/60">
-              <span className="text-slate-400">Data Validation</span>
-              <span className="font-mono text-slate-200">Pydantic v2</span>
-            </div>
-            <div className="flex justify-between py-1.5">
-              <span className="text-slate-400">CORS Policy</span>
-              <span className="font-mono text-emerald-400">Active (localhost:3000)</span>
-            </div>
-          </div>
+          <Card padding="none" className="overflow-hidden bg-[#111319] border-[#272B36]">
+            {conversationsState.loading &&
+            documentsState.loading &&
+            reviewsState.loading ? (
+              <div className="p-4 space-y-3">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : recentActivity.length === 0 ? (
+              <EmptyState
+                icon={<Code2 className="w-4 h-4" />}
+                title="No recent activity"
+                description="Your uploaded PDFs, AI Tutor threads, and code reviews will appear here."
+                action={
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => onNavigate("code-review")}
+                  >
+                    Submit a Code Review
+                  </Button>
+                }
+                className="border-0 rounded-none bg-transparent"
+              />
+            ) : (
+              <ul className="divide-y divide-[#272B36]">
+                {recentActivity.map((item) => {
+                  const badgeLabel =
+                    item.type === "conversation"
+                      ? "Chat"
+                      : item.type === "document"
+                      ? "PDF"
+                      : "Review";
+                  const badgeVariant =
+                    item.type === "conversation"
+                      ? "ai"
+                      : item.type === "document"
+                      ? "neutral"
+                      : "cyan";
+
+                  return (
+                    <li key={item.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (item.conversationId) {
+                            handleOpenConversation(item.conversationId);
+                          } else {
+                            onNavigate(item.targetTab);
+                          }
+                        }}
+                        className="w-full px-4 py-3.5 flex items-center justify-between gap-3 text-left hover:bg-[#181C25] transition-colors duration-150 motion-reduce:transition-none cursor-pointer focus-visible:outline-none focus-visible:bg-[#181C25]"
+                      >
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Badge variant={badgeVariant} size="sm">
+                              {badgeLabel}
+                            </Badge>
+                            <p className="text-xs font-medium text-[#FAFAFA] truncate">
+                              {item.title}
+                            </p>
+                          </div>
+                          <p className="text-[11px] text-[#71717A] truncate">
+                            {item.meta}
+                          </p>
+                        </div>
+                        <span className="text-[11px] text-[#71717A] tabular-nums shrink-0">
+                          {formatRelativeTime(item.timestamp)}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

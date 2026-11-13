@@ -1,68 +1,121 @@
 "use client";
 
 import React from "react";
-import { Terminal, Shield, BookMarked, Github } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ChevronDown, Github, LogOut, Menu, Settings as SettingsIcon } from "lucide-react";
+import { authClient } from "@/lib/auth/client";
+import { performSignOut } from "@/lib/auth/signOut";
+import { AppTab, TAB_META } from "@/lib/navigation";
+import { Dropdown, IconButton } from "@/components/ui";
 import { HealthBadge } from "./HealthBadge";
 
 interface HeaderProps {
-  currentTab: string;
+  currentTab: AppTab;
+  onSelectTab: (tab: AppTab) => void;
+  mobileMenuOpen: boolean;
+  onOpenMobileMenu: () => void;
 }
 
-export function Header({ currentTab }: HeaderProps) {
-  const titles: Record<string, { title: string; subtitle: string }> = {
-    dashboard: {
-      title: "System Overview",
-      subtitle: "CodePilot AI Full-Stack Platform Status & Diagnostics",
-    },
-    "ai-tutor": {
-      title: "AI Learning Tutor",
-      subtitle: "Curriculum-grounded question answering and concept explanations",
-    },
-    "code-review": {
-      title: "AI Code Reviewer",
-      subtitle: "Multi-language static, algorithmic, and complexity analysis",
-    },
-    sandbox: {
-      title: "Isolated Code Sandbox",
-      subtitle: "Secure containerized code execution environment",
-    },
-    guardrails: {
-      title: "Safety & Guardrails",
-      subtitle: "Prompt injection resistance and policy enforcement",
-    },
-    settings: {
-      title: "Settings & Configuration",
-      subtitle: "API keys, model parameters, and environment settings",
-    },
-  };
+export function Header({
+  currentTab,
+  onSelectTab,
+  mobileMenuOpen,
+  onOpenMobileMenu,
+}: HeaderProps) {
+  const router = useRouter();
+  const current = TAB_META[currentTab] || TAB_META.dashboard;
 
-  const current = titles[currentTab] || titles.dashboard;
+  const sessionHook =
+    typeof authClient?.useSession === "function"
+      ? authClient.useSession()
+      : { data: null, isPending: false };
+  const user = sessionHook?.data?.user;
+  const displayName = user?.name || "Account";
+  const displayEmail = user?.email || undefined;
+  const userInitial = (displayName.charAt(0) || "A").toUpperCase();
 
   return (
-    <header className="h-16 border-b border-slate-800/80 bg-[#0b0f19]/80 backdrop-blur-sm px-8 flex items-center justify-between shrink-0">
-      <div>
-        <h1 className="text-sm font-semibold text-white tracking-tight">{current.title}</h1>
-        <p className="text-[11px] text-slate-400">{current.subtitle}</p>
+    <header className="h-14 bg-[#0D0F15] border-b border-[#272B36] px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-3 shrink-0 z-30">
+      <div className="flex items-center gap-3 min-w-0">
+        {/* Mobile Drawer Trigger */}
+        <div className="md:hidden">
+          <IconButton
+            label="Open navigation menu"
+            variant="secondary"
+            size="sm"
+            aria-expanded={mobileMenuOpen}
+            aria-controls="mobile-sidebar-drawer"
+            onClick={onOpenMobileMenu}
+          >
+            <Menu className="w-4 h-4" />
+          </IconButton>
+        </div>
+
+        <div className="min-w-0">
+          <h1 className="text-sm font-semibold text-[#FAFAFA] tracking-tight truncate">
+            {current.title}
+          </h1>
+          <p className="hidden sm:block text-[11px] text-[#71717A] truncate">
+            {current.subtitle}
+          </p>
+        </div>
       </div>
 
-      <div className="flex items-center gap-4">
-        {/* Backend Health Status Badge */}
+      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
         <HealthBadge />
 
-        <div className="h-4 w-px bg-slate-800" />
+        <div className="hidden sm:block h-4 w-px bg-[#27272A]" aria-hidden="true" />
 
-        {/* GitHub Link */}
         <a
           href="https://github.com/MohitJaiswal2507/CodePilot-"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white px-2.5 py-1.5 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-900/40 transition-colors"
+          aria-label="Open CodePilot GitHub repository"
+          className="hidden sm:inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md border border-[#27272A] hover:border-[#3F3F46] bg-[#111113] hover:bg-[#18181B] text-xs text-[#A1A1AA] hover:text-[#FAFAFA] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6]"
         >
-          <Github className="w-3.5 h-3.5" />
-          <span>Repository</span>
+          <Github className="w-3.5 h-3.5" aria-hidden="true" />
+          <span className="hidden lg:inline">Repository</span>
         </a>
+
+        <Dropdown
+          align="right"
+          menuLabel="Account menu"
+          trigger={
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 h-8 px-2 rounded-md border border-[#27272A] hover:border-[#3F3F46] bg-[#111113] hover:bg-[#18181B] text-xs text-[#FAFAFA] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6]"
+            >
+              <span className="w-5 h-5 rounded-full bg-[#18181B] border border-[#27272A] flex items-center justify-center text-[10px] font-semibold text-[#FAFAFA]">
+                {userInitial}
+              </span>
+              <span className="hidden md:inline max-w-[120px] truncate text-[#A1A1AA]">
+                {displayName}
+              </span>
+              <ChevronDown className="w-3.5 h-3.5 text-[#71717A]" aria-hidden="true" />
+            </button>
+          }
+          items={[
+            {
+              id: "settings",
+              label: "Settings",
+              description: displayEmail,
+              icon: <SettingsIcon className="w-3.5 h-3.5 text-[#A1A1AA]" />,
+              onSelect: () => onSelectTab("settings"),
+            },
+            {
+              id: "sign-out",
+              label: "Sign Out",
+              danger: true,
+              icon: <LogOut className="w-3.5 h-3.5" />,
+              onSelect: () => {
+                performSignOut(router).catch((err) => {
+                  console.error("Sign out failed:", err);
+                });
+              },
+            },
+          ]}
+        />
       </div>
     </header>
   );
 }
-
