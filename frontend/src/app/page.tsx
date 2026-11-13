@@ -1,23 +1,41 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Header } from "@/components/Header";
 import { DashboardOverview } from "@/components/DashboardOverview";
 import { AITutor } from "@/components/AITutor";
 import { CodeReviewer } from "@/components/CodeReviewer";
-import { Code2, Terminal, ShieldCheck, Settings as SettingsIcon } from "lucide-react";
+import { CodeSandbox } from "@/components/CodeSandbox";
+import { Settings } from "@/components/Settings";
 import { authClient } from "@/lib/auth/client";
+import { AppTab, isAppTab } from "@/lib/navigation";
 import { setApiAuthToken } from "@/services/api";
 
+const SIDEBAR_COLLAPSED_KEY = "codepilot_sidebar_collapsed";
+
+const TAB_TITLES: Record<AppTab, string> = {
+  dashboard: "Dashboard — CodePilot AI",
+  "ai-tutor": "AI Tutor — CodePilot AI",
+  "code-review": "Code Reviewer — CodePilot AI",
+  sandbox: "Code Sandbox — CodePilot AI",
+  settings: "Settings — CodePilot AI",
+};
+
 export default function Home() {
-  const [currentTab, setCurrentTab] = useState<string>("dashboard");
+  const [currentTab, setCurrentTab] = useState<AppTab>("dashboard");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
       const savedTab = localStorage.getItem("codepilot_active_tab");
-      if (savedTab) {
+      if (isAppTab(savedTab)) {
         setCurrentTab(savedTab);
+      }
+      const savedCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+      if (savedCollapsed === "true") {
+        setSidebarCollapsed(true);
       }
     }
 
@@ -28,86 +46,78 @@ export default function Home() {
         if (sessionRes?.data?.session?.token) {
           setApiAuthToken(sessionRes.data.session.token);
         }
-      } catch (err) {
+      } catch {
         // Fallback or dev mode handling
       }
     }
     syncSessionToken();
   }, []);
 
-  const handleSelectTab = (tab: string) => {
-    setCurrentTab(tab);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("codepilot_active_tab", tab);
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.title = TAB_TITLES[currentTab] || "CodePilot AI";
     }
-  };
+  }, [currentTab]);
+
+  const handleSelectTab = useCallback((tab: AppTab | string) => {
+    const nextTab: AppTab = isAppTab(tab) ? tab : "dashboard";
+    setCurrentTab(nextTab);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("codepilot_active_tab", nextTab);
+    }
+  }, []);
+
+  const handleToggleCollapse = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      if (typeof window !== "undefined") {
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+      }
+      return next;
+    });
+  }, []);
+
+  const handleCloseMobileMenu = useCallback(() => {
+    setMobileMenuOpen(false);
+  }, []);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#090d16]">
-      {/* Sidebar Navigation */}
-      <Sidebar currentTab={currentTab} onSelectTab={handleSelectTab} />
+    <div className="relative flex h-screen w-full overflow-hidden bg-[#080A10]">
+      {/* Sidebar Navigation (Desktop collapsible + Mobile drawer) */}
+      <div className="relative z-20 flex shrink-0">
+        <Sidebar
+          currentTab={currentTab}
+          onSelectTab={handleSelectTab}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={handleToggleCollapse}
+          mobileOpen={mobileMenuOpen}
+          onCloseMobile={handleCloseMobileMenu}
+        />
+      </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <Header currentTab={currentTab} />
+      <div className="relative z-10 flex-1 flex flex-col min-w-0 overflow-hidden">
+        <Header
+          currentTab={currentTab}
+          onSelectTab={handleSelectTab}
+          mobileMenuOpen={mobileMenuOpen}
+          onOpenMobileMenu={() => setMobileMenuOpen(true)}
+        />
 
-        <main className="flex-1 overflow-y-auto p-8">
-          {currentTab === "dashboard" && (
-            <DashboardOverview onNavigate={handleSelectTab} />
-          )}
+        <main className="flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-7">
+          <div key={currentTab} className="max-w-7xl mx-auto animate-cp-fade-up">
+            {currentTab === "dashboard" && (
+              <DashboardOverview onNavigate={handleSelectTab} />
+            )}
 
-          {currentTab === "ai-tutor" && (
-            <AITutor />
-          )}
+            {currentTab === "ai-tutor" && <AITutor />}
 
-          {currentTab === "code-review" && (
-            <CodeReviewer />
-          )}
+            {currentTab === "code-review" && <CodeReviewer />}
 
-          {currentTab === "sandbox" && (
-            <div className="max-w-4xl mx-auto rounded-xl border border-slate-800 bg-[#0d121f] p-8 text-center space-y-4">
-              <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto">
-                <Terminal className="w-6 h-6" />
-              </div>
-              <h2 className="text-lg font-bold text-white">Code Execution Sandbox</h2>
-              <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
-                Secure containerized code runner with memory limits, CPU quotas, and zero network access for safe compilation and test execution.
-              </p>
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800 text-[11px] text-slate-300 border border-slate-700">
-                Coming Soon
-              </div>
-            </div>
-          )}
+            {currentTab === "sandbox" && <CodeSandbox />}
 
-          {currentTab === "guardrails" && (
-            <div className="max-w-4xl mx-auto rounded-xl border border-slate-800 bg-[#0d121f] p-8 text-center space-y-4">
-              <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
-                <ShieldCheck className="w-6 h-6" />
-              </div>
-              <h2 className="text-lg font-bold text-white">AI Safety & Guardrails</h2>
-              <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
-                Input sanitization, prompt injection resistance, strict schema verification, and execution quotas.
-              </p>
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800 text-[11px] text-slate-300 border border-slate-700">
-                Active Protection Policies
-              </div>
-            </div>
-          )}
-
-          {currentTab === "settings" && (
-            <div className="max-w-4xl mx-auto rounded-xl border border-slate-800 bg-[#0d121f] p-8 text-center space-y-4">
-              <div className="w-12 h-12 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center mx-auto">
-                <SettingsIcon className="w-6 h-6" />
-              </div>
-              <h2 className="text-lg font-bold text-white">System Settings</h2>
-              <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
-                Environment variables, API endpoints, and platform configurations.
-              </p>
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800 text-[11px] text-slate-300 border border-slate-700">
-                Environment Configured
-              </div>
-            </div>
-          )}
+            {currentTab === "settings" && <Settings />}
+          </div>
         </main>
       </div>
     </div>

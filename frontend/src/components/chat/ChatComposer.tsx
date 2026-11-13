@@ -81,19 +81,19 @@ export function ChatComposer({
   const hasContent = value.trim().length > 0;
 
   return (
-    <div className="relative rounded-xl border border-slate-800 bg-[#070b16] shadow-lg transition-all focus-within:border-indigo-500/70 focus-within:ring-1 focus-within:ring-indigo-500/20">
+    <div className="relative rounded-xl border border-white/[0.1] bg-[#111319]/90 backdrop-blur-md shadow-xl transition-all duration-150 focus-within:border-[#8B5CF6]/60 focus-within:ring-2 focus-within:ring-[#8B5CF6]/20">
       {/* Editing Previous Message Banner */}
       {isEditing && (
-        <div className="flex items-center justify-between px-3 py-1.5 bg-indigo-950/40 border-b border-indigo-900/40 rounded-t-xl text-[11px] text-indigo-300">
+        <div className="flex items-center justify-between px-3 py-1.5 bg-[#8B5CF6]/15 border-b border-[#8B5CF6]/30 rounded-t-xl text-[11px] text-[#A78BFA]">
           <div className="flex items-center gap-1.5">
-            <CornerDownLeft className="w-3.5 h-3.5 text-indigo-400" />
+            <CornerDownLeft className="w-3.5 h-3.5 text-[#A78BFA]" />
             <span className="font-medium">Editing previous message</span>
-            <span className="text-slate-500 text-[10px]">(Press Esc to cancel)</span>
+            <span className="text-[#A1A1AA] text-[10px]">(Press Esc to cancel)</span>
           </div>
           {onCancelEdit && (
             <button
               onClick={onCancelEdit}
-              className="p-1 rounded hover:bg-indigo-900/40 text-slate-400 hover:text-white transition-colors"
+              className="p-1 rounded hover:bg-white/[0.08] text-[#A1A1AA] hover:text-[#F4F4F5] transition-colors"
               title="Cancel editing"
             >
               <X className="w-3.5 h-3.5" />
@@ -109,7 +109,7 @@ export function ChatComposer({
           type="button"
           disabled={disabled || isLoading}
           title="Attach file or code snippet (Coming Soon)"
-          className="p-2 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800/60 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+          className="p-2 rounded-lg text-[#71717A] hover:text-[#F4F4F5] hover:bg-white/[0.06] transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
         >
           <Paperclip className="w-4 h-4" />
         </button>
@@ -123,7 +123,7 @@ export function ChatComposer({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="flex-1 bg-transparent text-xs sm:text-[13px] text-slate-200 placeholder:text-slate-500 resize-none outline-none leading-relaxed min-h-[44px] max-h-[200px] overflow-y-auto py-2 px-1 font-sans selection:bg-indigo-500/30"
+          className="flex-1 bg-transparent text-xs sm:text-[13px] text-[#F4F4F5] placeholder:text-[#71717A] resize-none outline-none leading-relaxed min-h-[44px] max-h-[200px] overflow-y-auto py-2 px-1 font-sans selection:bg-[#8B5CF6]/30"
           style={{ height: "44px" }}
         />
 
@@ -134,7 +134,7 @@ export function ChatComposer({
               type="button"
               onClick={onCancel}
               title="Stop generation (Esc)"
-              className="flex items-center justify-center w-8 h-8 rounded-lg bg-slate-800 hover:bg-rose-950/50 border border-slate-700/80 hover:border-rose-700/60 text-slate-200 hover:text-rose-400 transition-colors shadow-sm"
+              className="flex items-center justify-center w-8 h-8 rounded-lg bg-[#181C25] hover:bg-red-500/20 border border-red-500/30 hover:border-red-500/50 text-red-400 transition-colors shadow-sm cursor-pointer"
             >
               <Square className="w-3.5 h-3.5 fill-current" />
             </button>
@@ -144,7 +144,7 @@ export function ChatComposer({
               onClick={onSend}
               disabled={!hasContent || disabled}
               title="Send message (Enter)"
-              className="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800/80 text-white disabled:text-slate-600 transition-colors shadow-sm disabled:cursor-not-allowed"
+              className="flex items-center justify-center w-8 h-8 rounded-lg bg-[#8B5CF6] hover:bg-[#7C3AED] disabled:bg-[#181C25] text-white disabled:text-[#71717A] transition-colors shadow-sm disabled:cursor-not-allowed cursor-pointer shadow-[0_0_16px_-4px_rgba(139,92,246,0.5)] disabled:shadow-none"
             >
               <Send className="w-3.5 h-3.5" />
             </button>
@@ -153,12 +153,12 @@ export function ChatComposer({
       </div>
 
       {/* Helper Footer Subtext */}
-      <div className="hidden sm:flex items-center justify-between px-3 pb-2 pt-0.5 text-[10px] text-slate-500 select-none">
+      <div className="hidden sm:flex items-center justify-between px-3 pb-2 pt-0.5 text-[10px] text-[#71717A] select-none">
         <span>
-          <kbd className="px-1 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono text-[9px]">Enter</kbd> to send, <kbd className="px-1 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono text-[9px]">Shift + Enter</kbd> for new line
+          <kbd className="px-1 py-0.5 rounded bg-[#181C25] border border-[#272B36] text-[#A1A1AA] font-mono text-[9px]">Enter</kbd> to send, <kbd className="px-1 py-0.5 rounded bg-[#181C25] border border-[#272B36] text-[#A1A1AA] font-mono text-[9px]">Shift + Enter</kbd> for new line
         </span>
         <span>
-          <kbd className="px-1 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono text-[9px]">↑</kbd> edit previous
+          <kbd className="px-1 py-0.5 rounded bg-[#181C25] border border-[#272B36] text-[#A1A1AA] font-mono text-[9px]">↑</kbd> edit previous
         </span>
       </div>
     </div>

@@ -113,15 +113,15 @@ function UserCodeBlock({ code, language }: { code: string; language?: string }) 
   };
 
   return (
-    <div className="relative group my-2 rounded-lg bg-[#070b1a] border border-indigo-400/25 overflow-hidden shadow-inner text-left">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#0c142b]/90 border-b border-indigo-400/15 text-[10px] text-indigo-200 select-none">
-        <span className="font-mono font-medium uppercase tracking-wider text-indigo-300 flex items-center gap-1.5">
-          <Code2 className="w-3 h-3 text-indigo-400" />
+    <div className="relative group my-2 rounded-lg bg-[#080A10]/90 border border-white/[0.12] overflow-hidden shadow-inner text-left">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#111319]/90 border-b border-white/[0.08] text-[10px] text-[#A1A1AA] select-none">
+        <span className="font-mono font-medium uppercase tracking-wider text-[#A78BFA] flex items-center gap-1.5">
+          <Code2 className="w-3 h-3 text-[#A78BFA]" />
           {language && language !== "code" ? language : "Code"}
         </span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-indigo-600/30 text-indigo-200 hover:text-white transition-colors"
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-white/[0.08] text-[#A1A1AA] hover:text-[#F4F4F5] transition-colors"
           title="Copy code"
         >
           {copied ? (
@@ -138,7 +138,7 @@ function UserCodeBlock({ code, language }: { code: string; language?: string }) 
         </button>
       </div>
       <div className="p-3 overflow-x-auto max-w-full">
-        <pre className="!bg-transparent !p-0 !m-0 font-mono text-[11px] leading-relaxed text-indigo-100 whitespace-pre">
+        <pre className="!bg-transparent !p-0 !m-0 font-mono text-[11px] leading-relaxed text-[#F4F4F5] whitespace-pre">
           <code>{code}</code>
         </pre>
       </div>

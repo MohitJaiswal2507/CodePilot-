@@ -1,154 +1,378 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { 
-  LayoutDashboard, 
-  BookOpen, 
-  Code2, 
-  Terminal, 
-  ShieldCheck, 
-  Cpu, 
-  Settings,
-  Sparkles,
+import {
+  BookOpen,
+  Code2,
+  Cpu,
+  LayoutDashboard,
+  Loader2,
   LogOut,
-  Loader2
+  PanelLeftClose,
+  PanelLeftOpen,
+  Settings,
+  Terminal,
+  X,
 } from "lucide-react";
 import { authClient } from "@/lib/auth/client";
-import { setApiAuthToken, clearApiAuthToken } from "@/services/api";
+import { performSignOut } from "@/lib/auth/signOut";
+import { AppTab, NAV_ITEMS, NavItemConfig } from "@/lib/navigation";
+import { cn } from "@/lib/cn";
+import { IconButton, Tooltip } from "@/components/ui";
+
+const TAB_ICONS: Record<AppTab, React.ComponentType<{ className?: string }>> = {
+  dashboard: LayoutDashboard,
+  "ai-tutor": BookOpen,
+  "code-review": Code2,
+  sandbox: Terminal,
+  settings: Settings,
+};
+
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
 
 interface SidebarProps {
-  currentTab: string;
-  onSelectTab: (tab: string) => void;
+  currentTab: AppTab;
+  onSelectTab: (tab: AppTab) => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+  mobileOpen: boolean;
+  onCloseMobile: () => void;
 }
 
-export function Sidebar({ currentTab, onSelectTab }: SidebarProps) {
+export function Sidebar({
+  currentTab,
+  onSelectTab,
+  collapsed,
+  onToggleCollapse,
+  mobileOpen,
+  onCloseMobile,
+}: SidebarProps) {
   const router = useRouter();
-  const [isSigningOut, setIsSigningOut] = React.useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const mobileDrawerRef = useRef<HTMLDivElement>(null);
 
-  // Retrieve reactive session from Better Auth React adapter
-  const sessionHook = typeof authClient?.useSession === "function" ? authClient.useSession() : { data: null, isPending: false };
+  const sessionHook =
+    typeof authClient?.useSession === "function"
+      ? authClient.useSession()
+      : { data: null, isPending: false };
   const user = sessionHook?.data?.user;
   const isPending = sessionHook?.isPending;
 
-  const displayName = user?.name || "Developer";
-  const displayEmail = user?.email || "Workspace Active";
-  const userInitial = (displayName.charAt(0) || "D").toUpperCase();
+  const displayName = user?.name || "Workspace User";
+  const displayEmail = user?.email || "";
+  const userInitial = (displayName.charAt(0) || "U").toUpperCase();
+
+  // Mobile drawer accessibility: focus trap, Escape, body scroll lock, focus restoration
+  useEffect(() => {
+    if (!mobileOpen) return;
+
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    requestAnimationFrame(() => {
+      mobileDrawerRef.current?.focus();
+    });
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCloseMobile();
+        return;
+      }
+
+      if (e.key === "Tab" && mobileDrawerRef.current) {
+        const focusables = Array.from(
+          mobileDrawerRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
+        ).filter((el) => !el.hasAttribute("disabled"));
+
+        if (focusables.length === 0) {
+          e.preventDefault();
+          mobileDrawerRef.current.focus();
+          return;
+        }
+
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+
+        if (e.shiftKey) {
+          if (
+            !active ||
+            active === mobileDrawerRef.current ||
+            active === first ||
+            !mobileDrawerRef.current.contains(active)
+          ) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (
+            !active ||
+            active === last ||
+            !mobileDrawerRef.current.contains(active)
+          ) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previouslyFocused?.focus?.();
+    };
+  }, [mobileOpen, onCloseMobile]);
 
   const handleSignOut = async () => {
     setIsSigningOut(true);
     try {
-      await authClient.signOut();
-      clearApiAuthToken();
-      if (typeof window !== "undefined") {
-        localStorage.removeItem("codepilot_session_id");
-        localStorage.removeItem("codepilot_auth_token");
-        localStorage.removeItem("codepilot_active_tab");
-      }
-      router.push("/login");
-      router.refresh();
+      await performSignOut(router);
     } catch (err) {
       console.error("Sign out failed:", err);
       setIsSigningOut(false);
     }
   };
 
-  const navItems = [
-    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { id: "ai-tutor", label: "AI Learning Tutor", icon: BookOpen },
-    { id: "code-review", label: "Code Reviewer", icon: Code2 },
-    { id: "sandbox", label: "Code Execution", icon: Terminal },
-    { id: "guardrails", label: "AI Guardrails", icon: ShieldCheck },
-    { id: "settings", label: "Settings", icon: Settings },
-  ];
+  const handleNavClick = (tab: AppTab) => {
+    onSelectTab(tab);
+    if (mobileOpen) {
+      onCloseMobile();
+    }
+  };
 
-  return (
-    <aside className="w-64 bg-[#0d121f] border-r border-slate-800/80 flex flex-col justify-between shrink-0 select-none">
+  const workspaceItems = NAV_ITEMS.filter((item) => item.group === "workspace");
+  const preferenceItems = NAV_ITEMS.filter((item) => item.group === "preferences");
+
+  const renderNavGroup = (
+    groupLabel: string,
+    items: NavItemConfig[],
+    isCompact: boolean
+  ) => (
+    <div className="space-y-1">
+      {!isCompact && (
+        <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-[#71717A]">
+          {groupLabel}
+        </p>
+      )}
+      {isCompact && <div className="my-2 border-t border-[#27272A]" aria-hidden="true" />}
+
+      {items.map((item) => {
+        const Icon = TAB_ICONS[item.id];
+        const isActive = currentTab === item.id;
+
+        const button = (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => handleNavClick(item.id)}
+            aria-current={isActive ? "page" : undefined}
+            className={cn(
+              "relative w-full flex items-center rounded-md text-xs font-medium transition-colors duration-150 cursor-pointer",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6]",
+              isCompact ? "justify-center h-9 px-0" : "gap-2.5 h-9 px-2.5",
+              isActive
+                ? "bg-[#181C25] text-[#FAFAFA] border border-[#272B36]"
+                : "text-[#A1A1AA] hover:text-[#FAFAFA] hover:bg-[#181C25]/50 border border-transparent"
+            )}
+          >
+            {isActive && (
+              <span
+                aria-hidden="true"
+                className="absolute left-0 top-1.5 bottom-1.5 w-[2.5px] rounded-r bg-[#3B82F6]"
+              />
+            )}
+            <Icon
+              className={cn(
+                "w-4 h-4 shrink-0 transition-colors",
+                isActive ? "text-[#3B82F6]" : "text-[#71717A]"
+              )}
+            />
+            {!isCompact && <span className="truncate">{item.label}</span>}
+          </button>
+        );
+
+        return isCompact ? (
+          <Tooltip key={item.id} content={item.label} side="right" className="w-full flex justify-center">
+            {button}
+          </Tooltip>
+        ) : (
+          button
+        );
+      })}
+    </div>
+  );
+
+  const renderSidebarBody = (isCompact: boolean, isMobileDrawer: boolean) => (
+    <div className="flex flex-col justify-between h-full select-none">
       {/* Brand Header */}
       <div>
-        <div className="h-16 flex items-center px-6 border-b border-slate-800/80 gap-3">
-          <div className="w-9 h-9 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
-            <Cpu className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-semibold tracking-tight text-white text-base">CodePilot</span>
-              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                AI
+        <div
+          className={cn(
+            "h-14 flex items-center border-b border-[#27272A] shrink-0",
+            isCompact ? "justify-center px-2" : "justify-between px-4"
+          )}
+        >
+          {!isCompact && (
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-7 h-7 rounded-md bg-[#181C25] border border-[#272B36] flex items-center justify-center text-[#3B82F6] shrink-0">
+                <Cpu className="w-4 h-4" />
+              </div>
+              <span className="font-semibold tracking-tight text-[#F4F4F5] text-sm truncate">
+                CodePilot
               </span>
             </div>
-            <p className="text-[11px] text-slate-400">Learning & Review Copilot</p>
-          </div>
+          )}
+
+          {isMobileDrawer ? (
+            <IconButton
+              label="Close navigation menu"
+              size="sm"
+              onClick={onCloseMobile}
+            >
+              <X className="w-4 h-4" />
+            </IconButton>
+          ) : (
+            <Tooltip
+              content={isCompact ? "Expand sidebar" : "Collapse sidebar"}
+              side="right"
+            >
+              <IconButton
+                label={isCompact ? "Expand sidebar" : "Collapse sidebar"}
+                size="sm"
+                onClick={onToggleCollapse}
+              >
+                {isCompact ? (
+                  <PanelLeftOpen className="w-4 h-4" />
+                ) : (
+                  <PanelLeftClose className="w-4 h-4" />
+                )}
+              </IconButton>
+            </Tooltip>
+          )}
         </div>
 
-        {/* Navigation Items */}
-        <div className="px-3 py-4 space-y-1">
-          <p className="px-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
-            Navigation
-          </p>
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = currentTab === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => onSelectTab(item.id)}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                  isActive
-                    ? "bg-indigo-600/15 text-indigo-300 border border-indigo-500/20"
-                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <Icon className={`w-4 h-4 ${isActive ? "text-indigo-400" : "text-slate-400"}`} />
-                  <span>{item.label}</span>
-                </div>
-              </button>
-            );
-          })}
-        </div>
+        {/* Navigation Groups */}
+        <nav
+          aria-label="Primary navigation"
+          className={cn("py-4 space-y-5", isCompact ? "px-2" : "px-3")}
+        >
+          {renderNavGroup("Workspace", workspaceItems, isCompact)}
+          {renderNavGroup("Preferences", preferenceItems, isCompact)}
+        </nav>
       </div>
 
-      {/* User Profile & Sign Out Footer */}
-      <div className="p-4 border-t border-slate-800/80 space-y-2">
-        <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800 flex items-center justify-between">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-full bg-indigo-900/50 border border-indigo-600/40 flex items-center justify-center text-xs font-semibold text-indigo-200 shrink-0">
+      {/* User Account & Sign Out Footer */}
+      <div className={cn("border-t border-white/[0.08] space-y-2", isCompact ? "p-2" : "p-3")}>
+        {!isCompact ? (
+          <div className="px-2.5 py-2 rounded-md glass-subtle flex items-center gap-2.5 min-w-0">
+            <div className="w-7 h-7 rounded-full bg-[#111113] border border-[#27272A] flex items-center justify-center text-xs font-semibold text-[#FAFAFA] shrink-0">
               {isPending ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-300" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#A1A1AA]" />
               ) : (
                 userInitial
               )}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium text-slate-200 truncate">
+              <p className="text-xs font-medium text-[#FAFAFA] truncate">
                 {isPending ? "Loading..." : displayName}
               </p>
-              <p className="text-[10px] text-slate-400 truncate" title={displayEmail}>
-                {displayEmail}
-              </p>
+              {displayEmail && (
+                <p className="text-[11px] text-[#71717A] truncate" title={displayEmail}>
+                  {displayEmail}
+                </p>
+              )}
             </div>
           </div>
-          <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700/60 shrink-0 ml-1">
-            <Sparkles className="w-2.5 h-2.5 text-indigo-400" /> Pro
-          </span>
-        </div>
+        ) : (
+          <Tooltip content={displayEmail ? `${displayName} (${displayEmail})` : displayName} side="right" className="w-full flex justify-center">
+            <div
+              tabIndex={0}
+              className="w-8 h-8 rounded-full bg-[#18181B] border border-[#27272A] flex items-center justify-center text-xs font-semibold text-[#FAFAFA] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6]"
+            >
+              {isPending ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#A1A1AA]" />
+              ) : (
+                userInitial
+              )}
+            </div>
+          </Tooltip>
+        )}
 
-        {/* Sign Out Action Button */}
-        <button
-          onClick={handleSignOut}
-          disabled={isSigningOut}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-slate-400 hover:text-rose-300 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 transition-all cursor-pointer disabled:cursor-not-allowed"
-          title="Sign out of CodePilot AI"
-        >
-          {isSigningOut ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <LogOut className="w-3.5 h-3.5" />
-          )}
-          <span>{isSigningOut ? "Signing out..." : "Sign Out"}</span>
-        </button>
+        {isCompact ? (
+          <Tooltip content="Sign Out" side="right" className="w-full flex justify-center">
+            <IconButton
+              label="Sign out"
+              variant="danger"
+              size="md"
+              onClick={handleSignOut}
+              isLoading={isSigningOut}
+              className="w-9 h-9"
+            >
+              <LogOut className="w-4 h-4" />
+            </IconButton>
+          </Tooltip>
+        ) : (
+          <button
+            type="button"
+            onClick={handleSignOut}
+            disabled={isSigningOut}
+            className="w-full h-8 flex items-center justify-center gap-2 px-3 rounded-md text-xs font-medium text-[#A1A1AA] hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/25 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6]"
+          >
+            {isSigningOut ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <LogOut className="w-3.5 h-3.5" />
+            )}
+            <span>{isSigningOut ? "Signing out..." : "Sign Out"}</span>
+          </button>
+        )}
       </div>
-    </aside>
+    </div>
+  );
+
+  return (
+    <>
+      {/* Desktop & Tablet Collapsible Sidebar */}
+      <aside
+        aria-label="Workspace sidebar"
+        className={cn(
+          "hidden md:flex flex-col shrink-0 bg-[#0D0F15] border-r border-[#272B36] transition-[width] duration-200 ease-out motion-reduce:transition-none",
+          collapsed ? "w-[68px]" : "w-60"
+        )}
+      >
+        {renderSidebarBody(collapsed, false)}
+      </aside>
+
+      {/* Mobile Slide-in Navigation Drawer */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-50 md:hidden flex bg-black/70 backdrop-blur-sm"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) onCloseMobile();
+          }}
+        >
+          <div
+            id="mobile-sidebar-drawer"
+            ref={mobileDrawerRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation menu"
+            tabIndex={-1}
+            className="w-72 max-w-[85vw] h-full bg-[#111319] border-r border-[#272B36] outline-none"
+          >
+            {renderSidebarBody(false, true)}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
