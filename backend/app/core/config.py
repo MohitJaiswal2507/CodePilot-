@@ -2,7 +2,7 @@ import math
 import os
 from pathlib import Path
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from dotenv import load_dotenv
 
 # Load .env file from backend root or parent
@@ -115,6 +115,27 @@ class Settings(BaseModel):
     OBSERVABILITY_ENABLED: bool = os.getenv("OBSERVABILITY_ENABLED", "true").lower() in ("true", "1", "yes")
     OBSERVABILITY_LOG_PATH: str = os.getenv("OBSERVABILITY_LOG_PATH", "")
     CHROMA_PERSIST_DIR: str = _resolved_chroma
+    PGVECTOR_DIMENSION: int = 768
+    VECTOR_STORE_BACKEND: str = os.getenv("VECTOR_STORE_BACKEND", "chroma").lower().strip()
+    EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "local").lower().strip()
+    GEMINI_EMBEDDING_MODEL: str = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-2").strip()
+    EMBEDDING_DIMENSION: int = Field(
+        default_factory=lambda: parse_positive_int_env(
+            os.getenv("EMBEDDING_DIMENSION"),
+            768,
+            "EMBEDDING_DIMENSION",
+        )
+    )
+
+    @model_validator(mode="after")
+    def validate_vector_settings(self) -> "Settings":
+        if self.VECTOR_STORE_BACKEND == "pgvector":
+            if self.EMBEDDING_DIMENSION != self.PGVECTOR_DIMENSION:
+                raise ValueError(
+                    f"Unsupported EMBEDDING_DIMENSION={self.EMBEDDING_DIMENSION} for pgvector backend. "
+                    f"Neon pgvector document_chunks schema is fixed at {self.PGVECTOR_DIMENSION} dimensions."
+                )
+        return self
     EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
     MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "15"))
     DEFAULT_CHUNK_SIZE: int = int(os.getenv("DEFAULT_CHUNK_SIZE", "600"))

@@ -1,17 +1,45 @@
 import os
+import math
+import uuid
 import threading
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Sequence
+
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from sentence_transformers import SentenceTransformer
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
 from app.core.config import settings
+from app.db.session import SessionLocal
+from app.models.document_chunk import DocumentChunkModel
 from app.schemas.tutor import DocumentChunk, DocumentSummary
+from app.services.embedding_provider import (
+    EmbeddingProvider,
+    get_embedding_provider,
+)
 
 logger = logging.getLogger(__name__)
 
+
+def _cosine_distance(v1: Sequence[float], v2: Sequence[float]) -> float:
+    """Compute cosine distance (1 - cosine_similarity) between two vectors."""
+    dot = sum(a * b for a, b in zip(v1, v2))
+    norm1 = math.sqrt(sum(a * a for a in v1))
+    norm2 = math.sqrt(sum(b * b for b in v2))
+    if norm1 <= 1e-9 or norm2 <= 1e-9:
+        return 1.0
+    cosine_sim = dot / (norm1 * norm2)
+    return max(0.0, 1.0 - cosine_sim)
+
+
 class VectorStoreService:
+    """
+    ChromaDB-backed vector store for local development and testing.
+    Also acts as default vector store facade.
+    """
     _instance: Optional["VectorStoreService"] = None
     _lock = threading.Lock()
 
@@ -30,6 +58,10 @@ class VectorStoreService:
 
     @classmethod
     def get_instance(cls) -> "VectorStoreService":
+        backend = (settings.VECTOR_STORE_BACKEND or "chroma").lower().strip()
+        if backend == "pgvector":
+            return PgVectorStoreService.get_instance()
+
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -93,7 +125,6 @@ class VectorStoreService:
             len(chunks),
         )
 
-        # Chroma handles upserting by ID
         self.collection.upsert(
             ids=ids,
             embeddings=embeddings,
@@ -120,7 +151,6 @@ class VectorStoreService:
         if count == 0:
             return []
 
-        # Server-enforced ownership filter
         if document_filter:
             clean_filter = str(document_filter).strip()
             where_filter = {
@@ -158,7 +188,6 @@ class VectorStoreService:
         distances = results["distances"][0] if results.get("distances") else [0.0] * len(docs)
 
         for doc_text, meta, dist in zip(docs, metas, distances):
-            # In Chroma with cosine distance: distance = 1 - similarity.
             similarity = round(1.0 - float(dist), 4)
             retrieved.append({
                 "text": doc_text,
@@ -182,9 +211,6 @@ class VectorStoreService:
         return retrieved
 
     def list_documents(self, user_id: str) -> List[DocumentSummary]:
-        """
-        Aggregate unique documents stored in ChromaDB belonging strictly to user_id.
-        """
         clean_user_id = str(user_id).strip() if user_id else ""
         if not clean_user_id:
             return []
@@ -230,16 +256,12 @@ class VectorStoreService:
         return sorted(summaries, key=lambda s: s.uploaded_at, reverse=True)
 
     def delete_document(self, user_id: str, document_identifier: str) -> bool:
-        """
-        Delete all chunks belonging strictly to user_id for the given document name or ID.
-        """
         clean_user_id = str(user_id).strip() if user_id else ""
         if not clean_user_id or not document_identifier:
             return False
 
         clean_ident = str(document_identifier).strip()
 
-        # Check by document_name
         existing_by_name = self.collection.get(
             where={
                 "$and": [
@@ -259,7 +281,6 @@ class VectorStoreService:
             )
             return True
 
-        # Check by document_id
         existing_by_id = self.collection.get(
             where={
                 "$and": [
@@ -282,10 +303,6 @@ class VectorStoreService:
         return False
 
     def clear_user_documents(self, user_id: str) -> int:
-        """
-        Delete all documents and chunks belonging strictly to user_id.
-        NEVER wipes other users' data or the shared collection.
-        """
         clean_user_id = str(user_id).strip() if user_id else ""
         if not clean_user_id:
             return 0
@@ -300,11 +317,6 @@ class VectorStoreService:
         return count
 
     def quarantine_legacy_chunks(self) -> int:
-        """
-        Identify legacy chunks in ChromaDB without a verified user_id,
-        and quarantine them by tagging with user_id='__legacy_quarantined__'.
-        This renders them completely inaccessible to normal authenticated user queries.
-        """
         all_records = self.collection.get(include=["metadatas", "documents"])
         if not all_records or not all_records.get("ids"):
             return 0
@@ -315,7 +327,6 @@ class VectorStoreService:
 
         for chunk_id, meta in zip(all_records["ids"], all_records["metadatas"]):
             user_id = meta.get("user_id") if meta else None
-            # If no user_id or empty or already unassigned
             if not user_id or str(user_id).strip() in ("", "None", "unknown"):
                 updated_meta = dict(meta) if meta else {}
                 updated_meta["user_id"] = "__legacy_quarantined__"
@@ -324,7 +335,6 @@ class VectorStoreService:
                 quarantined_metas.append(updated_meta)
 
         if quarantined_ids:
-            # Update metadatas in place
             self.collection.update(
                 ids=quarantined_ids,
                 metadatas=quarantined_metas,
@@ -338,9 +348,6 @@ class VectorStoreService:
         target_user_id: str,
         document_name: Optional[str] = None,
     ) -> int:
-        """
-        Safe recovery procedure: Reassign quarantined legacy chunks to a verified target user ID.
-        """
         clean_target = str(target_user_id).strip()
         if not clean_target:
             raise ValueError("target_user_id is required")
@@ -379,3 +386,352 @@ class VectorStoreService:
             clean_target,
         )
         return len(updated_ids)
+
+
+ChromaVectorStoreService = VectorStoreService
+
+
+class PgVectorStoreService:
+    """
+    PostgreSQL pgvector storage service for CodePilot AI RAG.
+    Executes in-database cosine distance searches with HNSW index acceleration in PostgreSQL,
+    and supports SQLite fallback for local offline testing.
+    """
+    _instance: Optional["PgVectorStoreService"] = None
+    _lock = threading.Lock()
+
+    def __init__(
+        self,
+        embedding_provider: Optional[EmbeddingProvider] = None,
+        expected_dimension: Optional[int] = None,
+    ):
+        self.embedding_provider = embedding_provider or get_embedding_provider()
+        self.expected_dimension = expected_dimension or settings.EMBEDDING_DIMENSION or 768
+
+    @classmethod
+    def get_instance(cls) -> "PgVectorStoreService":
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Reset singleton for test isolation."""
+        with cls._lock:
+            cls._instance = None
+
+    def add_document_chunks(
+        self,
+        chunks: List[DocumentChunk],
+        user_id: str,
+        document_id: str,
+        file_size_bytes: int = 0,
+    ) -> None:
+        """
+        Embed chunks and insert into PostgreSQL document_chunks table with strict user ownership.
+        """
+        if not chunks:
+            return
+
+        clean_user_id = str(user_id).strip() if user_id else ""
+        clean_doc_id = str(document_id).strip() if document_id else ""
+
+        if not clean_user_id:
+            raise ValueError("user_id is strictly required for document indexing into vector store")
+        if not clean_doc_id:
+            raise ValueError("document_id is strictly required for document indexing into vector store")
+
+        if self.embedding_provider.dimension != self.expected_dimension:
+            raise ValueError(
+                f"Embedding provider dimension ({self.embedding_provider.dimension}) does not match "
+                f"pgvector store dimension ({self.expected_dimension})."
+            )
+
+        texts = [chunk.text for chunk in chunks]
+        titles = [str(chunk.document_name) for chunk in chunks]
+        embeddings = self.embedding_provider.embed_texts(texts, titles=titles)
+
+        for i, emb in enumerate(embeddings):
+            if len(emb) != self.expected_dimension:
+                raise ValueError(
+                    f"Chunk embedding dimension {len(emb)} at index {i} does not match expected {self.expected_dimension}"
+                )
+
+        with SessionLocal() as db:
+            # Delete any existing chunks for this specific document and user
+            db.query(DocumentChunkModel).filter(
+                DocumentChunkModel.owner_user_id == clean_user_id,
+                DocumentChunkModel.document_id == clean_doc_id,
+            ).delete()
+
+            records = [
+                DocumentChunkModel(
+                    id=str(uuid.uuid4()),
+                    chunk_id=str(chunk.id),
+                    document_id=clean_doc_id,
+                    owner_user_id=clean_user_id,
+                    document_name=str(chunk.document_name),
+                    page_number=int(chunk.page_number),
+                    chunk_index=int(chunk.chunk_index),
+                    text=chunk.text,
+                    file_size_bytes=int(file_size_bytes),
+                    embedding=embeddings[i] if i < len(embeddings) else None,
+                )
+                for i, chunk in enumerate(chunks)
+            ]
+            db.add_all(records)
+            db.commit()
+
+        logger.info(
+            "pgvector indexing: user_id=%s, document_id=%s, chunks_count=%d",
+            clean_user_id,
+            clean_doc_id,
+            len(chunks),
+        )
+
+    def similarity_search(
+        self,
+        query: str,
+        user_id: str,
+        top_k: int = 4,
+        document_filter: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve most relevant chunks using cosine similarity.
+        STRICT SECURITY RULE: user_id is mandatory. No cross-tenant data leakage permitted.
+        """
+        clean_user_id = str(user_id).strip() if user_id else ""
+        if not clean_user_id:
+            raise ValueError("user_id is strictly required for similarity search to maintain data isolation")
+
+        query_embedding = self.embedding_provider.embed_query(query)
+        if len(query_embedding) != self.expected_dimension:
+            raise ValueError(
+                f"Query embedding dimension {len(query_embedding)} does not match "
+                f"pgvector store dimension {self.expected_dimension}."
+            )
+
+        clean_filter = str(document_filter).strip() if document_filter else None
+
+        with SessionLocal() as db:
+            dialect_name = db.bind.dialect.name if db.bind else "postgresql"
+
+            if dialect_name == "postgresql":
+                # Native PostgreSQL pgvector cosine distance: embedding <=> :query_vec
+                vec_str = "[" + ",".join(f"{float(x):.8f}" for x in query_embedding) + "]"
+                query_sql = """
+                    SELECT
+                        id,
+                        chunk_id,
+                        document_id,
+                        owner_user_id,
+                        document_name,
+                        page_number,
+                        chunk_index,
+                        text,
+                        file_size_bytes,
+                        (embedding <=> CAST(:query_vec AS vector)) AS distance
+                    FROM document_chunks
+                    WHERE owner_user_id = :user_id
+                """
+                params: Dict[str, Any] = {
+                    "query_vec": vec_str,
+                    "user_id": clean_user_id,
+                    "top_k": top_k,
+                }
+                if clean_filter:
+                    query_sql += " AND document_name = :doc_filter"
+                    params["doc_filter"] = clean_filter
+
+                query_sql += " ORDER BY distance ASC LIMIT :top_k"
+                rows = db.execute(text(query_sql), params).mappings().all()
+
+                retrieved: List[Dict[str, Any]] = []
+                for row in rows:
+                    dist = float(row["distance"])
+                    similarity = round(1.0 - dist, 4)
+                    retrieved.append({
+                        "text": row["text"],
+                        "document_name": row["document_name"],
+                        "source_filename": row["document_name"],
+                        "document_id": row["document_id"],
+                        "chunk_id": row["chunk_id"],
+                        "user_id": row["owner_user_id"],
+                        "page_number": int(row["page_number"]),
+                        "chunk_index": int(row["chunk_index"]),
+                        "similarity": similarity,
+                        "distance": dist,
+                    })
+
+                logger.info(
+                    "pgvector retrieval (PostgreSQL native): user_id=%s, retrieved_count=%d",
+                    clean_user_id,
+                    len(retrieved),
+                )
+                return retrieved
+
+            else:
+                # SQLite / non-PostgreSQL fallback (used for local offline unit tests)
+                stmt = db.query(DocumentChunkModel).filter(
+                    DocumentChunkModel.owner_user_id == clean_user_id
+                )
+                if clean_filter:
+                    stmt = stmt.filter(DocumentChunkModel.document_name == clean_filter)
+
+                chunks = stmt.all()
+                if not chunks:
+                    return []
+
+                scored = []
+                for chunk in chunks:
+                    c_vec = chunk.embedding
+                    if c_vec and len(c_vec) == len(query_embedding):
+                        dist = _cosine_distance(query_embedding, c_vec)
+                    else:
+                        dist = 1.0
+                    similarity = round(1.0 - dist, 4)
+                    scored.append((dist, similarity, chunk))
+
+                scored.sort(key=lambda x: x[0])
+                top_results = scored[:top_k]
+
+                retrieved = [
+                    {
+                        "text": chunk.text,
+                        "document_name": chunk.document_name,
+                        "source_filename": chunk.document_name,
+                        "document_id": chunk.document_id,
+                        "chunk_id": chunk.chunk_id,
+                        "user_id": chunk.owner_user_id,
+                        "page_number": chunk.page_number,
+                        "chunk_index": chunk.chunk_index,
+                        "similarity": sim,
+                        "distance": dist,
+                    }
+                    for dist, sim, chunk in top_results
+                ]
+
+                logger.info(
+                    "pgvector retrieval (fallback): user_id=%s, retrieved_count=%d",
+                    clean_user_id,
+                    len(retrieved),
+                )
+                return retrieved
+
+    def list_documents(self, user_id: str) -> List[DocumentSummary]:
+        clean_user_id = str(user_id).strip() if user_id else ""
+        if not clean_user_id:
+            return []
+
+        with SessionLocal() as db:
+            chunks = (
+                db.query(DocumentChunkModel)
+                .filter(DocumentChunkModel.owner_user_id == clean_user_id)
+                .order_by(DocumentChunkModel.created_at.desc())
+                .all()
+            )
+            if not chunks:
+                return []
+
+            docs_map: Dict[str, Dict[str, Any]] = {}
+            for c in chunks:
+                key = c.document_id or c.document_name
+                if key not in docs_map:
+                    docs_map[key] = {
+                        "id": c.document_id,
+                        "document_name": c.document_name,
+                        "owner_user_id": clean_user_id,
+                        "pages": set(),
+                        "total_chunks": 0,
+                        "file_size_bytes": c.file_size_bytes,
+                        "uploaded_at": c.created_at.isoformat() if c.created_at else datetime.now(timezone.utc).isoformat(),
+                    }
+                docs_map[key]["pages"].add(c.page_number)
+                docs_map[key]["total_chunks"] += 1
+
+            summaries = [
+                DocumentSummary(
+                    id=item["id"],
+                    document_name=item["document_name"],
+                    total_pages=len(item["pages"]),
+                    total_chunks=item["total_chunks"],
+                    file_size_bytes=item["file_size_bytes"],
+                    uploaded_at=item["uploaded_at"],
+                    owner_user_id=clean_user_id,
+                )
+                for item in docs_map.values()
+            ]
+            return sorted(summaries, key=lambda s: s.uploaded_at, reverse=True)
+
+    def delete_document(self, user_id: str, document_identifier: str) -> bool:
+        clean_user_id = str(user_id).strip() if user_id else ""
+        if not clean_user_id or not document_identifier:
+            return False
+        clean_ident = str(document_identifier).strip()
+
+        with SessionLocal() as db:
+            deleted = (
+                db.query(DocumentChunkModel)
+                .filter(
+                    DocumentChunkModel.owner_user_id == clean_user_id,
+                    (DocumentChunkModel.document_name == clean_ident)
+                    | (DocumentChunkModel.document_id == clean_ident),
+                )
+                .delete(synchronize_session=False)
+            )
+            db.commit()
+            return deleted > 0
+
+    def clear_user_documents(self, user_id: str) -> int:
+        clean_user_id = str(user_id).strip() if user_id else ""
+        if not clean_user_id:
+            return 0
+
+        with SessionLocal() as db:
+            deleted = (
+                db.query(DocumentChunkModel)
+                .filter(DocumentChunkModel.owner_user_id == clean_user_id)
+                .delete(synchronize_session=False)
+            )
+            db.commit()
+            logger.info("pgvector clear_user_documents: user_id=%s, deleted_chunks=%d", clean_user_id, deleted)
+            return deleted
+
+    def quarantine_legacy_chunks(self) -> int:
+        with SessionLocal() as db:
+            updated = (
+                db.query(DocumentChunkModel)
+                .filter(
+                    (DocumentChunkModel.owner_user_id == None)  # noqa: E711
+                    | (DocumentChunkModel.owner_user_id == "")
+                    | (DocumentChunkModel.owner_user_id == "unknown")
+                    | (DocumentChunkModel.owner_user_id == "None")
+                )
+                .update({"owner_user_id": "__legacy_quarantined__"}, synchronize_session=False)
+            )
+            db.commit()
+            if updated:
+                logger.info("Quarantined %d legacy chunks in pgvector", updated)
+            return updated
+
+    def reassign_quarantined_documents(
+        self,
+        target_user_id: str,
+        document_name: Optional[str] = None,
+    ) -> int:
+        clean_target = str(target_user_id).strip()
+        if not clean_target:
+            raise ValueError("target_user_id is required")
+
+        with SessionLocal() as db:
+            q = db.query(DocumentChunkModel).filter(
+                DocumentChunkModel.owner_user_id == "__legacy_quarantined__"
+            )
+            if document_name:
+                q = q.filter(DocumentChunkModel.document_name == str(document_name).strip())
+            updated = q.update({"owner_user_id": clean_target}, synchronize_session=False)
+            db.commit()
+            logger.info("Reassigned %d quarantined chunks to user_id=%s in pgvector", updated, clean_target)
+            return updated
