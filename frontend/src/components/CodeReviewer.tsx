@@ -578,129 +578,140 @@ export function CodeReviewer() {
   const stdinByteLength = new TextEncoder().encode(stdinInput).length;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       {/* Main Split Grid: Editor (Left) & Results (Right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
         {/* Left Column: Monaco Editor (6 cols) */}
-        <div className="lg:col-span-6 flex flex-col space-y-4">
+        <div className="lg:col-span-6 flex flex-col">
           <div className="rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col flex-1">
             {/* Editor Toolbar */}
-            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-[#272B36] bg-[#0d0f17]">
-              {/* Language Selector */}
-              <div className="flex items-center gap-1.5 p-1 rounded-xl bg-[#080A10] border border-white/[0.08]">
-                {(["python", "java", "cpp"] as SupportedLanguage[]).map((lang) => (
-                  <button
-                    key={lang}
-                    onClick={() => handleLanguageChange(lang)}
-                    disabled={isRunning}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer disabled:opacity-50 ${
-                      language === lang
-                        ? "bg-blue-600 text-white shadow-sm shadow-blue-900/40"
-                        : "text-zinc-400 hover:text-zinc-200"
-                    }`}
-                  >
-                    {lang === "python" ? "Python" : lang === "java" ? "Java" : "C++"}
-                  </button>
-                ))}
+            <div className="border-b border-[#272B36] bg-[#0d0f17] px-3.5 py-2 flex flex-col gap-2">
+              {/* Row 1: Samples & File Badge */}
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[11px] font-medium text-zinc-500 shrink-0">
+                    {language === "python" ? "Python" : language === "java" ? "Java" : "C++"} Samples:
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {SAMPLE_CODES[language].map((sample, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => handleLoadSample(sample)}
+                        disabled={isRunning || isSubmitting}
+                        title={sample.description}
+                        className="text-[11px] px-2 py-0.5 rounded-md bg-[#181C25] hover:bg-[#202533] text-zinc-300 border border-white/[0.08] hover:text-white hover:border-white/[0.16] transition-colors cursor-pointer disabled:opacity-50"
+                      >
+                        {sample.title.split("(")[0].trim().split(" ").slice(0, 2).join(" ")}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <span className="text-xs font-mono text-zinc-400 px-2 py-0.5 rounded-md bg-[#080A10] border border-white/[0.08]">
+                  {language === "python" ? "main.py" : language === "java" ? "Main.java" : "main.cpp"}
+                </span>
               </div>
 
-              {/* Sample Code Dropdown / Buttons */}
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] text-zinc-500">Samples:</span>
-                <div className="flex gap-1.5">
-                  {SAMPLE_CODES[language].map((sample, idx) => (
+              {/* Row 2: Language Selector on Left & Action Buttons on Right */}
+              <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/[0.04]">
+                {/* Language Selector Pills */}
+                <div className="flex items-center gap-1 p-0.5 rounded-lg bg-[#080A10] border border-white/[0.08]">
+                  {(["python", "java", "cpp"] as SupportedLanguage[]).map((lang) => (
                     <button
-                      key={idx}
-                      onClick={() => handleLoadSample(sample)}
-                      disabled={isRunning}
-                      title={sample.description}
-                      className="text-[11px] px-2 py-1 rounded-lg bg-[#181C25] hover:bg-[#202533] text-zinc-300 border border-white/[0.08] hover:text-white hover:border-white/[0.16] transition-colors cursor-pointer disabled:opacity-50"
+                      key={lang}
+                      onClick={() => handleLanguageChange(lang)}
+                      disabled={isRunning || isSubmitting}
+                      className={`px-2 py-0.5 rounded-md text-xs font-medium transition-all cursor-pointer disabled:opacity-50 ${
+                        language === lang
+                          ? "bg-blue-600 text-white shadow-sm shadow-blue-900/40"
+                          : "text-zinc-400 hover:text-zinc-200"
+                      }`}
                     >
-                      {sample.title.split(" ")[0]}
+                      {lang === "python" ? "Python" : lang === "java" ? "Java" : "C++"}
                     </button>
                   ))}
                 </div>
-              </div>
 
-              {/* Action Buttons */}
-              <div className="flex items-center gap-2">
-                {/* Past Reviews Toggle Button */}
-                <button
-                  onClick={() => setShowHistoryDrawer(!showHistoryDrawer)}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#181C25] border border-white/[0.08] hover:border-white/[0.16] text-xs text-zinc-300 hover:text-white transition-all shadow-sm cursor-pointer"
-                  title="View past code reviews"
-                >
-                  <History className="w-3.5 h-3.5 text-zinc-400" />
-                  <span className="hidden sm:inline">Past Reviews</span>
-                  {history.length > 0 && (
-                    <span className="px-1.5 py-0.2 rounded-full bg-[#181C25] text-[#3B82F6] font-mono text-[10px] border border-[#3B82F6]/30">
-                      {history.length}
-                    </span>
-                  )}
-                </button>
-
-                <button
-                  onClick={handleClear}
-                  disabled={!code || isSubmitting || isRunning}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#181C25] border border-white/[0.08] hover:border-white/[0.16] text-zinc-400 hover:text-zinc-200 text-xs disabled:opacity-40 transition-colors cursor-pointer"
-                  title="Clear editor"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Clear</span>
-                </button>
-
-                <button
-                  onClick={handleRunCode}
-                  disabled={isRunning || !code.trim()}
-                  className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs disabled:opacity-50 transition-all shadow-md shadow-emerald-950/40 cursor-pointer"
-                  title="Execute code in isolated sandbox"
-                >
-                  {isRunning ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Running...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>Run Code</span>
-                    </>
-                  )}
-                </button>
-
-                <button
-                  onClick={handleSubmitReview}
-                  disabled={isSubmitting || !code.trim()}
-                  className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] text-white font-medium text-xs disabled:opacity-50 transition-all shadow-md shadow-blue-900/30 cursor-pointer"
-                >
-                  {isSubmitting ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Reviewing...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>Review Code</span>
-                    </>
-                  )}
-                </button>
-
-                {isSubmitting && (
+                {/* Action Buttons: Past Reviews, Clear, Run Code, Review Code */}
+                <div className="flex items-center gap-1.5">
                   <button
-                    onClick={handleCancelReview}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#181C25] hover:bg-[#202533] border border-white/[0.08] text-zinc-200 font-medium text-xs transition-colors cursor-pointer"
-                    title="Cancel in-progress code review"
+                    onClick={() => setShowHistoryDrawer(!showHistoryDrawer)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#181C25] hover:bg-[#202533] border border-white/[0.08] hover:border-white/[0.16] text-xs text-zinc-300 hover:text-white transition-all shadow-sm cursor-pointer"
+                    title="View past code reviews"
                   >
-                    <XCircle className="w-3.5 h-3.5 text-rose-400" />
-                    <span>Cancel</span>
+                    <History className="w-3.5 h-3.5 text-zinc-400" />
+                    <span className="hidden sm:inline">Past Reviews</span>
+                    {history.length > 0 && (
+                      <span className="px-1.5 py-0.2 rounded-full bg-[#181C25] text-[#3B82F6] font-mono text-[10px] border border-[#3B82F6]/30">
+                        {history.length}
+                      </span>
+                    )}
                   </button>
-                )}
+
+                  <button
+                    onClick={handleClear}
+                    disabled={!code || isSubmitting || isRunning}
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#181C25] hover:bg-[#202533] border border-white/[0.08] hover:border-white/[0.16] text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed"
+                    title="Clear editor"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Clear</span>
+                  </button>
+
+                  <button
+                    onClick={handleRunCode}
+                    disabled={isRunning || !code.trim()}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs disabled:opacity-50 transition-all shadow-md shadow-emerald-950/40 cursor-pointer disabled:cursor-not-allowed"
+                    title="Execute code in isolated sandbox"
+                  >
+                    {isRunning ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Running...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                        <span>Run Code</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={handleSubmitReview}
+                    disabled={isSubmitting || !code.trim()}
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs disabled:opacity-50 transition-all shadow-md shadow-blue-900/40 cursor-pointer disabled:cursor-not-allowed"
+                    title="Submit code for multi-agent review"
+                  >
+                    {isSubmitting ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Reviewing...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Review Code</span>
+                      </>
+                    )}
+                  </button>
+
+                  {isSubmitting && (
+                    <button
+                      onClick={handleCancelReview}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-300 font-medium text-xs transition-colors cursor-pointer"
+                      title="Cancel in-progress code review"
+                    >
+                      <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Cancel</span>
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 
             {/* Monaco Editor Container */}
-            <div className="h-[520px] w-full relative bg-[#080A10]">
+            <div className="h-[240px] lg:h-[250px] xl:h-[265px] w-full relative bg-[#080A10]">
               <Editor
                 height="100%"
                 language={MONACO_LANG_MAP[language]}
@@ -712,7 +723,7 @@ export function CodeReviewer() {
             </div>
 
             {/* Editor Footer Status */}
-            <div className="px-4 py-2 bg-[#0d0f17] border-t border-white/[0.08] flex items-center justify-between text-[11px] text-zinc-500">
+            <div className="px-3.5 py-1.5 bg-[#0d0f17] border-t border-white/[0.08] flex items-center justify-between text-[11px] text-zinc-500">
               <div className="flex items-center gap-3">
                 <span className="font-mono text-zinc-400">{code.length} characters</span>
                 <span>•</span>
@@ -727,7 +738,7 @@ export function CodeReviewer() {
 
           {/* Error Banner if any */}
           {errorMessage && (
-            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/25 flex items-start gap-3 text-rose-300 text-xs">
+            <div className="mt-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/25 flex items-start gap-3 text-rose-300 text-xs">
               <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
               <div>
                 <p className="font-semibold">Review Error</p>
@@ -738,27 +749,26 @@ export function CodeReviewer() {
         </div>
 
         {/* Right Column: Review Results Panel (6 cols) */}
-        <div className="lg:col-span-6 flex flex-col space-y-4">
+        <div className="lg:col-span-6 flex flex-col">
           {/* If no review yet and not submitting */}
           {!reviewResult && !isSubmitting && (
-            <div className="rounded-xl border border-dashed border-white/[0.12] bg-[#111319]/50 p-12 flex flex-col items-center justify-center text-center space-y-3 h-[580px]">
-              <div className="w-12 h-12 rounded-xl bg-[#181C25] border border-[#272B36] text-[#3B82F6] flex items-center justify-center shadow-inner">
-                <Sparkles className="w-6 h-6" />
+            <div className="rounded-xl border border-dashed border-white/[0.10] bg-[#111319]/40 p-6 flex flex-col items-center justify-center text-center space-y-3 h-[344px] lg:h-[354px] xl:h-[369px]">
+              <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[#3B82F6] flex items-center justify-center shadow-inner">
+                <Sparkles className="w-4 h-4" />
               </div>
-              <h3 className="text-sm font-semibold text-white">Awaiting Code Submission</h3>
-              <p className="text-xs text-zinc-400 max-w-sm leading-relaxed">
-                Choose Python, Java, or C++, paste your algorithm or function in the Monaco editor, and click{" "}
-                <span className="text-[#3B82F6] font-semibold">&ldquo;Review Code&rdquo;</span> to run multi-agent static and algorithmic validation.
-              </p>
-              <div className="pt-2 flex flex-wrap gap-2 justify-center">
-                <span className="text-[10px] px-2.5 py-1 rounded-md bg-[#181C25] border border-white/[0.08] text-zinc-400 font-mono">
-                  Python AST syntax check
+              <div className="space-y-0.5">
+                <h3 className="text-sm font-semibold text-zinc-100">Ready to Analyze</h3>
+                <p className="text-xs text-zinc-400">Your code insights will appear here.</p>
+              </div>
+              <div className="pt-1 flex flex-wrap items-center justify-center gap-2">
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-md bg-[#181C25] border border-white/[0.06] text-[11px] text-zinc-400 font-medium">
+                  Code Quality
                 </span>
-                <span className="text-[10px] px-2.5 py-1 rounded-md bg-[#181C25] border border-white/[0.08] text-zinc-400 font-mono">
-                  Estimated Big-O
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-md bg-[#181C25] border border-white/[0.06] text-[11px] text-zinc-400 font-medium">
+                  Complexity Analysis
                 </span>
-                <span className="text-[10px] px-2.5 py-1 rounded-md bg-[#181C25] border border-white/[0.08] text-zinc-400 font-mono">
-                  6-factor edge cases
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-md bg-[#181C25] border border-white/[0.06] text-[11px] text-zinc-400 font-medium">
+                  Edge Case Detection
                 </span>
               </div>
             </div>
@@ -766,7 +776,7 @@ export function CodeReviewer() {
 
           {/* Loading State Spinner Card */}
           {isSubmitting && (
-            <div className="rounded-xl border border-white/[0.08] bg-[#111319] p-12 flex flex-col items-center justify-center text-center space-y-4 h-[580px]">
+            <div className="rounded-xl border border-white/[0.08] bg-[#111319] p-6 flex flex-col items-center justify-center text-center space-y-3 h-[344px] lg:h-[354px] xl:h-[369px]">
               <div className="relative">
                 <div className="w-14 h-14 rounded-xl bg-[#3B82F6]/15 border border-[#3B82F6]/30 flex items-center justify-center text-[#3B82F6] animate-pulse">
                   <Layers className="w-7 h-7" />
@@ -788,12 +798,12 @@ export function CodeReviewer() {
 
           {/* Completed Review Panel */}
           {reviewResult && !isSubmitting && (
-            <div className="rounded-xl border border-[#272B36] bg-[#111319] flex flex-col flex-1 overflow-hidden h-[580px]">
+            <div className="rounded-xl border border-[#272B36] bg-[#111319] flex flex-col flex-1 overflow-hidden h-[344px] lg:h-[354px] xl:h-[369px]">
               {/* Header: Score & Overall Assessment */}
-              <div className="px-5 py-4 border-b border-[#272B36] bg-[#0d0f17] flex items-center justify-between">
+              <div className="px-4 py-2.5 border-b border-[#272B36] bg-[#0d0f17] flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   {/* Quality Score Circle Badge */}
-                  <div className="flex items-center justify-center w-11 h-11 rounded-xl bg-[#181C25] border border-white/[0.10] font-mono font-bold text-lg text-white">
+                  <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-[#181C25] border border-white/[0.10] font-mono font-bold text-base text-white">
                     <span className={reviewResult.quality_score >= 8 ? "text-emerald-400" : reviewResult.quality_score >= 5 ? "text-amber-400" : "text-rose-400"}>
                       {reviewResult.quality_score}
                     </span>
@@ -813,17 +823,17 @@ export function CodeReviewer() {
                         </div>
                       );
                     })()}
-                    <p className="text-[11px] text-zinc-400 mt-1 line-clamp-1">{reviewResult.summary}</p>
+                    <p className="text-[11px] text-zinc-400 mt-0.5 line-clamp-1">{reviewResult.summary}</p>
                   </div>
                 </div>
 
                 {/* Sub-Badges: Time & Space Quick Preview */}
                 <div className="hidden sm:flex items-center gap-2">
-                  <div className="px-2.5 py-1 rounded-lg bg-[#181C25] border border-white/[0.08] text-right">
+                  <div className="px-2.5 py-0.5 rounded-lg bg-[#181C25] border border-white/[0.08] text-right">
                     <span className="text-[10px] text-zinc-500 block">Time</span>
                     <span className="text-xs font-mono font-semibold text-[#3B82F6]">{reviewResult.complexity.time_complexity}</span>
                   </div>
-                  <div className="px-2.5 py-1 rounded-lg bg-[#181C25] border border-white/[0.08] text-right">
+                  <div className="px-2.5 py-0.5 rounded-lg bg-[#181C25] border border-white/[0.08] text-right">
                     <span className="text-[10px] text-zinc-500 block">Space</span>
                     <span className="text-xs font-mono font-semibold text-emerald-400">{reviewResult.complexity.space_complexity}</span>
                   </div>
@@ -834,7 +844,7 @@ export function CodeReviewer() {
               <div className="flex items-center border-b border-white/[0.08] bg-[#080A10] px-3 overflow-x-auto">
                 <button
                   onClick={() => setActiveTab("overview")}
-                  className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
+                  className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
                     activeTab === "overview"
                       ? "border-[#3B82F6] text-[#3B82F6] font-semibold"
                       : "border-transparent text-zinc-400 hover:text-zinc-200"
@@ -1095,10 +1105,10 @@ export function CodeReviewer() {
       </div>
 
       {/* Sandbox Execution Workspace: Standard Input & Console Output */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
         {/* Standard Input (stdin) Panel (4 cols) */}
         <div className="lg:col-span-4 rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col">
-          <div className="px-4 py-3 border-b border-[#272B36] bg-[#0d0f17] flex items-center justify-between gap-2">
+          <div className="px-3.5 py-2 border-b border-[#272B36] bg-[#0d0f17] flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <FileCode className="w-4 h-4 text-[#3B82F6]" />
               <h2 className="text-xs font-semibold text-white">Standard Input (stdin)</h2>
@@ -1114,19 +1124,19 @@ export function CodeReviewer() {
             )}
           </div>
 
-          <div className="p-3 flex-1 flex flex-col">
+          <div className="p-2.5 flex-1 flex flex-col">
             <textarea
               value={stdinInput}
               onChange={(e) => setStdinInput(e.target.value)}
               disabled={isRunning}
               placeholder="Optional program input passed via stdin..."
-              rows={5}
+              rows={4}
               aria-label="Standard input"
-              className="w-full flex-1 min-h-[128px] rounded-xl bg-[#080A10] border border-white/[0.08] focus:border-[#3B82F6] focus:outline-none focus:ring-1 focus:ring-[#3B82F6]/50 p-3 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 resize-y disabled:opacity-60"
+              className="w-full flex-1 h-[96px] min-h-[85px] max-h-[110px] rounded-lg bg-[#080A10] border border-white/[0.08] focus:border-[#3B82F6] focus:outline-none focus:ring-1 focus:ring-[#3B82F6]/50 p-2.5 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 resize-y disabled:opacity-60"
             />
           </div>
 
-          <div className="px-4 py-2 bg-[#0d0f17] border-t border-white/[0.08] flex items-center justify-between text-[11px] text-zinc-500">
+          <div className="px-3.5 py-1.5 bg-[#0d0f17] border-t border-white/[0.08] flex items-center justify-between text-[11px] text-zinc-500">
             <span className={`font-mono ${stdinByteLength > 65536 ? "text-rose-400" : "text-zinc-400"}`}>
               {stdinByteLength.toLocaleString()} / 65,536 bytes
             </span>

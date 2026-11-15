@@ -55,9 +55,11 @@ export function Header({
           <h1 className="text-sm font-semibold text-[#FAFAFA] tracking-tight truncate">
             {current.title}
           </h1>
-          <p className="hidden sm:block text-[11px] text-[#71717A] truncate">
-            {current.subtitle}
-          </p>
+          {current.subtitle ? (
+            <p className="hidden sm:block text-[11px] text-[#71717A] truncate">
+              {current.subtitle}
+            </p>
+          ) : null}
         </div>
       </div>
 

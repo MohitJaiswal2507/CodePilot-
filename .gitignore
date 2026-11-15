@@ -49,6 +49,9 @@ out/
 dist/
 build/
 
+# Vercel
+.vercel/
+
 # IDE and OS
 .vscode/
 .idea/
@@ -93,3 +96,7 @@ screenshots/
 
 DESIGN.md
 PRODUCT.md
+
+# CodePilot local runner runtime
+.codepilot-runtime/
+

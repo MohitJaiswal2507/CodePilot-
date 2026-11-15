@@ -167,7 +167,16 @@ class Settings(BaseModel):
     ALLOW_DEV_FALLBACK_AUTH: bool = os.getenv("ALLOW_DEV_FALLBACK_AUTH", "true").lower() in ("true", "1", "yes")
 
     # Docker Sandbox Execution Engine (Phase 1)
-    SANDBOX_ENABLED: bool = os.getenv("SANDBOX_ENABLED", "true").lower() in ("true", "1", "yes")
+    SANDBOX_ENABLED: bool = Field(
+        default_factory=lambda: (
+            os.getenv(
+                "SANDBOX_ENABLED",
+                "false" if (os.getenv("VERCEL") == "1" or os.getenv("SERVERLESS") == "1") else "true",
+            )
+            .lower()
+            in ("true", "1", "yes")
+        )
+    )
     SANDBOX_DOCKER_PYTHON_IMAGE: str = os.getenv("SANDBOX_DOCKER_PYTHON_IMAGE", "python:3.12-slim")
     SANDBOX_DOCKER_PYTHON_DIGEST: str = os.getenv(
         "SANDBOX_DOCKER_PYTHON_DIGEST",
@@ -201,6 +210,18 @@ class Settings(BaseModel):
     SANDBOX_MAX_USER_CONCURRENT_EXECUTIONS: int = int(os.getenv("SANDBOX_MAX_USER_CONCURRENT_EXECUTIONS", "2"))
     SANDBOX_RATE_LIMIT_REQUESTS: int = int(os.getenv("SANDBOX_RATE_LIMIT_REQUESTS", "15"))
     SANDBOX_RATE_LIMIT_WINDOW_SECONDS: int = int(os.getenv("SANDBOX_RATE_LIMIT_WINDOW_SECONDS", "60"))
+    SANDBOX_PROVIDER: str = os.getenv("SANDBOX_PROVIDER", "docker").lower().strip()
+    SANDBOX_RUNNER_URL: str = os.getenv("SANDBOX_RUNNER_URL", "").strip().rstrip("/")
+    SANDBOX_RUNNER_SECRET: str = os.getenv("SANDBOX_RUNNER_SECRET", "").strip()
+    SANDBOX_RUNNER_TIMEOUT_SECONDS: int = int(os.getenv("SANDBOX_RUNNER_TIMEOUT_SECONDS", "12"))
+
+    @property
+    def is_serverless(self) -> bool:
+        return (
+            os.getenv("VERCEL") == "1"
+            or os.getenv("SERVERLESS") == "1"
+            or self.ENVIRONMENT.lower() == "production"
+        )
 
     @property
     def resolved_jwks_url(self) -> str:

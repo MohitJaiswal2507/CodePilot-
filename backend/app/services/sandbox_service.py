@@ -511,7 +511,7 @@ def _run_container_streaming(
             _cleanup_container(container_name)
 
 
-def execute_code(
+def execute_docker_code(
     code: str,
     language: SupportedLanguage,
     stdin: Optional[str] = None,
@@ -519,7 +519,7 @@ def execute_code(
     custom_compile_timeout: Optional[int] = None,
 ) -> ExecutionResult:
     """
-    Execute source code in an isolated, ephemeral Docker container.
+    Execute source code directly in an isolated, ephemeral Docker container.
 
     Args:
         code: User source code string.
@@ -882,4 +882,40 @@ def execute_code(
         exit_code=proc_returncode,
         duration_ms=exec_duration_ms,
         truncated=False,
+    )
+
+
+def get_sandbox_provider():
+    """Resolve the active sandbox execution provider from server configuration."""
+    provider_type = (settings.SANDBOX_PROVIDER or "docker").lower().strip()
+    if provider_type in ("docker", "local_docker"):
+        from app.services.sandbox.docker_provider import LocalDockerProvider
+        return LocalDockerProvider()
+    elif provider_type in ("remote_http", "remote"):
+        from app.services.sandbox.remote_provider import RemoteHttpSandboxProvider
+        return RemoteHttpSandboxProvider()
+    else:
+        raise ValueError(
+            f"Unsupported SANDBOX_PROVIDER '{settings.SANDBOX_PROVIDER}'. "
+            f"Supported providers: 'docker', 'remote_http'."
+        )
+
+
+def execute_code(
+    code: str,
+    language: SupportedLanguage,
+    stdin: Optional[str] = None,
+    custom_timeout: Optional[int] = None,
+    custom_compile_timeout: Optional[int] = None,
+) -> ExecutionResult:
+    """
+    Execute source code using the configured sandbox provider (local Docker or remote HTTP runner).
+    """
+    provider = get_sandbox_provider()
+    return provider.execute(
+        code=code,
+        language=language,
+        stdin=stdin,
+        custom_timeout=custom_timeout,
+        custom_compile_timeout=custom_compile_timeout,
     )

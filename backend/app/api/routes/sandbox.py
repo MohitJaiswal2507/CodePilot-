@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from app.core.auth import AuthenticatedUser, get_current_user
+from app.core.config import settings
 from app.schemas.execution import ExecutionRequest, ExecutionResult
 from app.services.sandbox_limiter import SandboxRateLimitError, sandbox_limiter
 from app.services.sandbox_service import execute_code
@@ -35,6 +36,12 @@ def execute_sandbox_code(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authenticated user ID is missing or invalid.",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not settings.SANDBOX_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Code execution sandbox is disabled in this environment.",
         )
 
     code_bytes_len = len(payload.code.encode("utf-8"))

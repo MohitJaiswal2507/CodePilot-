@@ -6,9 +6,6 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Sequence
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
-from sentence_transformers import SentenceTransformer
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -46,7 +43,16 @@ class VectorStoreService:
     def __init__(self, persist_dir: str = None, model_name: str = None):
         self.persist_dir = persist_dir or settings.CHROMA_PERSIST_DIR
         self.model_name = model_name or settings.EMBEDDING_MODEL_NAME
-        self._embedder: Optional[SentenceTransformer] = None
+        self._embedder: Optional[Any] = None
+        try:
+            import chromadb
+            from chromadb.config import Settings as ChromaSettings
+        except ImportError as err:
+            raise ImportError(
+                "chromadb is required when using the local Chroma vector store backend. "
+                "Install it via `pip install chromadb` or set VECTOR_STORE_BACKEND=pgvector."
+            ) from err
+
         self._client = chromadb.PersistentClient(
             path=self.persist_dir,
             settings=ChromaSettings(anonymized_telemetry=False)
@@ -69,10 +75,17 @@ class VectorStoreService:
         return cls._instance
 
     @property
-    def embedder(self) -> SentenceTransformer:
+    def embedder(self) -> Any:
         if self._embedder is None:
             with self._lock:
                 if self._embedder is None:
+                    try:
+                        from sentence_transformers import SentenceTransformer
+                    except ImportError as err:
+                        raise ImportError(
+                            "sentence-transformers is required when using the local Chroma vector store backend. "
+                            "Install it via `pip install sentence-transformers` or use EMBEDDING_PROVIDER=gemini."
+                        ) from err
                     self._embedder = SentenceTransformer(self.model_name)
         return self._embedder
 

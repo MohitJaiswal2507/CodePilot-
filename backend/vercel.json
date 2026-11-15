@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "app/main.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{chroma_data/**,tests/**,evals/**,scripts/**,.pytest_cache/**,pytest.ini,codepilot_dev.db*}"
+    }
+  }
+}

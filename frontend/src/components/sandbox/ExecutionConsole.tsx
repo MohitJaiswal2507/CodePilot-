@@ -47,7 +47,7 @@ export function ExecutionConsole({
   return (
     <div className="rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col">
       {/* Console Header */}
-      <div className="px-4 py-3 border-b border-[#272B36] bg-[#0d0f17] flex flex-wrap items-center justify-between gap-3">
+      <div className="px-3.5 py-2 border-b border-[#272B36] bg-[#0d0f17] flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="flex items-center gap-2">
             <Terminal className="w-4 h-4 text-emerald-400" />
@@ -133,10 +133,10 @@ export function ExecutionConsole({
       </div>
 
       {/* Console Body */}
-      <div className="p-4 flex-1 min-h-[168px] max-h-[340px] overflow-y-auto space-y-3 bg-[#080A10]">
+      <div className="p-3 flex-1 h-[120px] max-h-[145px] overflow-y-auto space-y-2.5 bg-[#080A10]">
         {/* Running State */}
         {isRunning && (
-          <div className="py-10 flex flex-col items-center justify-center text-center space-y-2">
+          <div className="py-4 flex flex-col items-center justify-center text-center space-y-1.5">
             <RefreshCw className="w-5 h-5 text-emerald-400 animate-spin" />
             <p className="text-xs font-medium text-[#F4F4F5]">
               Executing {LANGUAGE_LABELS[language]} code in sandbox...
@@ -239,7 +239,7 @@ export function ExecutionConsole({
 
         {/* Empty Initial State */}
         {!isRunning && !executionResult && !executionError && (
-          <div className="py-10 flex flex-col items-center justify-center text-center space-y-1.5">
+          <div className="py-4 flex flex-col items-center justify-center text-center space-y-1">
             <Terminal className="w-5 h-5 text-[#71717A]" />
             <p className="text-xs text-[#A1A1AA]">
               Click <span className="text-emerald-400 font-semibold">&ldquo;Run Code&rdquo;</span> to execute your code and view stdout, stderr, compiler diagnostics, and runtime duration.

@@ -34,7 +34,7 @@ export const NAV_ITEMS: readonly NavItemConfig[] = [
     id: "code-review",
     label: "Code Reviewer",
     title: "Code Reviewer",
-    subtitle: "Multi-stage static analysis, complexity, and refactoring",
+    subtitle: "",
     group: "workspace",
   },
   {
