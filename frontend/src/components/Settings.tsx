@@ -6,13 +6,16 @@ import {
   Check,
   Code2,
   Cpu,
+  Download,
   Info,
+  Laptop,
   Loader2,
   LogOut,
   Monitor,
   Palette,
   RefreshCw,
   RotateCcw,
+  ShieldCheck,
   Sparkles,
   User,
 } from "lucide-react";
@@ -32,8 +35,16 @@ import {
   fetchAvailableModels,
   fetchBackendHealth,
 } from "@/services/api";
+import {
+  checkLocalRuntimeHealth,
+  getLocalRuntimeStatus,
+  getLocalRuntimeToken,
+  LocalRuntimeHealth,
+  LocalRuntimeStatus,
+} from "@/services/localRuntime";
+import { RuntimeInstallWizard } from "./RuntimeInstallWizard";
 
-type SettingsSection = "account" | "appearance" | "editor" | "ai" | "about";
+type SettingsSection = "account" | "appearance" | "editor" | "ai" | "runtime" | "about";
 
 const MODEL_STORAGE_KEY = "codepilot_gemini_model";
 const FONT_SIZE_OPTIONS = [12, 13, 14, 15, 16, 18];
@@ -48,6 +59,7 @@ const SECTIONS: {
   { id: "account", label: "Account", description: "Authenticated session", icon: User },
   { id: "appearance", label: "Appearance", description: "Workspace theme", icon: Palette },
   { id: "editor", label: "Code Editor", description: "Monaco & language defaults", icon: Code2 },
+  { id: "runtime", label: "Local Runtime", description: "Docker execution daemon", icon: Laptop },
   { id: "ai", label: "AI Preferences", description: "Default Gemini model", icon: Sparkles },
   { id: "about", label: "About", description: "Version & backend health", icon: Info },
 ];
@@ -86,6 +98,25 @@ export function Settings() {
   // About / Backend health state
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [isLoadingHealth, setIsLoadingHealth] = useState(false);
+
+  // Local Runtime state
+  const [runtimeHealth, setRuntimeHealth] = useState<LocalRuntimeHealth | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<LocalRuntimeStatus | null>(null);
+  const [isLoadingRuntime, setIsLoadingRuntime] = useState(false);
+  const [showRuntimeWizard, setShowRuntimeWizard] = useState(false);
+
+  const loadRuntime = useCallback(async () => {
+    setIsLoadingRuntime(true);
+    const h = await checkLocalRuntimeHealth(2500);
+    setRuntimeHealth(h);
+    if (h?.status === "ok") {
+      const s = await getLocalRuntimeStatus(3000);
+      setRuntimeStatus(s);
+    } else {
+      setRuntimeStatus(null);
+    }
+    setIsLoadingRuntime(false);
+  }, []);
 
   const sessionHook =
     typeof authClient?.useSession === "function"
@@ -135,7 +166,8 @@ export function Settings() {
   useEffect(() => {
     loadModels(false);
     loadHealth();
-  }, [loadModels, loadHealth]);
+    loadRuntime();
+  }, [loadModels, loadHealth, loadRuntime]);
 
   const handleSignOut = async () => {
     setIsSigningOut(true);
@@ -499,6 +531,176 @@ export function Settings() {
             </div>
           )}
 
+          {/* Local Runtime Settings */}
+          {activeSection === "runtime" && (
+            <div className="rounded-xl border border-[#272B36] bg-[#111319] p-6 space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-white">CodePilot Local Runtime</h2>
+                  <p className="text-xs text-zinc-400 mt-1">
+                    Execute code inside Docker on your personal machine with zero cloud runner dependency.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={loadRuntime}
+                    disabled={isLoadingRuntime}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#181C25] hover:bg-[#202533] border border-white/[0.08] hover:border-white/[0.16] text-xs text-zinc-300 hover:text-white disabled:opacity-50 transition-colors cursor-pointer"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 text-zinc-400 ${isLoadingRuntime ? "animate-spin" : ""}`}
+                    />
+                    <span>Refresh</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowRuntimeWizard(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs shadow-md shadow-blue-900/30 transition-all cursor-pointer"
+                  >
+                    <Laptop className="w-3.5 h-3.5" />
+                    <span>Open Setup Wizard</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Status Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-4 rounded-xl bg-[#181C25] border border-white/[0.08] space-y-1">
+                  <p className="text-[10px] uppercase font-bold text-zinc-500">Daemon Service</p>
+                  <p className="text-sm font-bold text-white flex items-center gap-2">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        runtimeHealth?.status === "ok" ? "bg-emerald-400" : "bg-rose-400"
+                      }`}
+                    />
+                    {runtimeHealth?.status === "ok" ? "Running (Port 8088)" : "Offline"}
+                  </p>
+                  <p className="text-[11px] text-zinc-400">
+                    {runtimeHealth?.latencyMs !== undefined
+                      ? `${runtimeHealth.latencyMs} ms latency`
+                      : "Daemon not running locally"}
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#181C25] border border-white/[0.08] space-y-1">
+                  <p className="text-[10px] uppercase font-bold text-zinc-500">Docker Engine</p>
+                  <p className="text-sm font-bold text-white flex items-center gap-2">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        runtimeHealth?.docker_available ? "bg-emerald-400" : "bg-rose-400"
+                      }`}
+                    />
+                    {runtimeHealth?.docker_available
+                      ? `Ready (${runtimeHealth.docker_version})`
+                      : "Daemon Stopped / Missing"}
+                  </p>
+                  <p className="text-[11px] text-zinc-400">
+                    {runtimeHealth?.docker_available
+                      ? "Isolated sandbox execution enabled"
+                      : "Start Docker Desktop"}
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#181C25] border border-white/[0.08] space-y-1">
+                  <p className="text-[10px] uppercase font-bold text-zinc-500">Browser Pairing</p>
+                  <p className="text-sm font-bold text-white flex items-center gap-2">
+                    <ShieldCheck
+                      className={`w-4 h-4 ${
+                        runtimeHealth?.status === "ok" && getLocalRuntimeToken()
+                          ? "text-emerald-400"
+                          : "text-zinc-500"
+                      }`}
+                    />
+                    {runtimeHealth?.status === "ok" && getLocalRuntimeToken()
+                      ? "Paired & Authenticated"
+                      : "Unpaired"}
+                  </p>
+                  <p className="text-[11px] text-zinc-400">RFC 1918 Private Network Access</p>
+                </div>
+              </div>
+
+              {/* Language Environments */}
+              <div className="space-y-3 pt-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                  Language Environments
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {[
+                    { lang: "Python 3.12", tag: "python:3.12-slim" },
+                    { lang: "Java 21", tag: "eclipse-temurin:21-jdk" },
+                    { lang: "C++ (GCC 14)", tag: "gcc:14" },
+                  ].map(({ lang, tag }) => {
+                    const isInstalled = runtimeStatus?.languages?.images?.[tag]?.installed ?? true;
+                    return (
+                      <div
+                        key={tag}
+                        className="p-3.5 rounded-xl bg-[#181C25] border border-white/[0.08] flex items-center justify-between"
+                      >
+                        <div>
+                          <p className="text-xs font-medium text-white">{lang}</p>
+                          <p className="text-[10px] font-mono text-zinc-500 mt-0.5">{tag}</p>
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                            isInstalled
+                              ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
+                              : "bg-amber-500/10 text-amber-300 border-amber-500/30"
+                          }`}
+                        >
+                          {isInstalled ? "Installed" : "Missing"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Download Desktop Installer */}
+              <div className="space-y-3 pt-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                  Desktop Installers
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <a
+                    href="/downloads/codepilot-runtime-setup-win-x64.exe"
+                    download
+                    className="p-3.5 rounded-xl border border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20 transition-all flex items-center justify-between cursor-pointer"
+                  >
+                    <div>
+                      <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <Download className="w-4 h-4 text-blue-400" />
+                        Windows Installer (.exe)
+                      </p>
+                      <p className="text-[11px] text-zinc-400 mt-1">
+                        Automated setup wizard (~29.8 MB)
+                      </p>
+                    </div>
+                    <span className="text-xs font-semibold text-blue-400">Download</span>
+                  </a>
+
+                  <a
+                    href="/downloads/codepilot-runtime-portable-win-x64.zip"
+                    download
+                    className="p-3.5 rounded-xl border border-[#272B36] bg-[#181C25] hover:bg-[#202533] transition-all flex items-center justify-between cursor-pointer"
+                  >
+                    <div>
+                      <p className="text-xs font-bold text-zinc-200 flex items-center gap-1.5">
+                        <Download className="w-4 h-4 text-zinc-400" />
+                        Portable Archive (.zip)
+                      </p>
+                      <p className="text-[11px] text-zinc-400 mt-1">
+                        No install required (~21.3 MB)
+                      </p>
+                    </div>
+                    <span className="text-xs font-semibold text-zinc-400">Download</span>
+                  </a>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* 4. AI Preferences */}
           {activeSection === "ai" && (
             <div className="rounded-xl border border-[#272B36] bg-[#111319] p-6 space-y-5">
@@ -709,6 +911,14 @@ export function Settings() {
           )}
         </section>
       </div>
+
+      <RuntimeInstallWizard
+        isOpen={showRuntimeWizard}
+        onClose={() => {
+          setShowRuntimeWizard(false);
+          loadRuntime();
+        }}
+      />
     </div>
   );
 }

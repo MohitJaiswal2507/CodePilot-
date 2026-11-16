@@ -18,6 +18,8 @@ build/
 develop-eggs/
 dist/
 downloads/
+!frontend/public/downloads/
+!frontend/public/downloads/**
 eggs/
 .eggs/
 /lib/
@@ -53,6 +55,8 @@ build/
 .vercel/
 
 # IDE and OS
+scratch/
+*.spec
 .vscode/
 .idea/
 .DS_Store

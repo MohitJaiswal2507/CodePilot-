@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown, Github, LogOut, Menu, Settings as SettingsIcon } from "lucide-react";
 import { authClient } from "@/lib/auth/client";
@@ -8,6 +8,8 @@ import { performSignOut } from "@/lib/auth/signOut";
 import { AppTab, TAB_META } from "@/lib/navigation";
 import { Dropdown, IconButton } from "@/components/ui";
 import { HealthBadge } from "./HealthBadge";
+import { RuntimeBadge } from "./RuntimeBadge";
+import { RuntimeInstallWizard } from "./RuntimeInstallWizard";
 
 interface HeaderProps {
   currentTab: AppTab;
@@ -24,6 +26,7 @@ export function Header({
 }: HeaderProps) {
   const router = useRouter();
   const current = TAB_META[currentTab] || TAB_META.dashboard;
+  const [showRuntimeWizard, setShowRuntimeWizard] = useState(false);
 
   const sessionHook =
     typeof authClient?.useSession === "function"
@@ -35,38 +38,40 @@ export function Header({
   const userInitial = (displayName.charAt(0) || "A").toUpperCase();
 
   return (
-    <header className="h-14 bg-[#0D0F15] border-b border-[#272B36] px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-3 shrink-0 z-30">
-      <div className="flex items-center gap-3 min-w-0">
-        {/* Mobile Drawer Trigger */}
-        <div className="md:hidden">
-          <IconButton
-            label="Open navigation menu"
-            variant="secondary"
-            size="sm"
-            aria-expanded={mobileMenuOpen}
-            aria-controls="mobile-sidebar-drawer"
-            onClick={onOpenMobileMenu}
-          >
-            <Menu className="w-4 h-4" />
-          </IconButton>
+    <>
+      <header className="h-14 bg-[#0D0F15] border-b border-[#272B36] px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-3 shrink-0 z-30">
+        <div className="flex items-center gap-3 min-w-0">
+          {/* Mobile Drawer Trigger */}
+          <div className="md:hidden">
+            <IconButton
+              label="Open navigation menu"
+              variant="secondary"
+              size="sm"
+              aria-expanded={mobileMenuOpen}
+              aria-controls="mobile-sidebar-drawer"
+              onClick={onOpenMobileMenu}
+            >
+              <Menu className="w-4 h-4" />
+            </IconButton>
+          </div>
+
+          <div className="min-w-0">
+            <h1 className="text-sm font-semibold text-[#FAFAFA] tracking-tight truncate">
+              {current.title}
+            </h1>
+            {current.subtitle ? (
+              <p className="hidden sm:block text-[11px] text-[#71717A] truncate">
+                {current.subtitle}
+              </p>
+            ) : null}
+          </div>
         </div>
 
-        <div className="min-w-0">
-          <h1 className="text-sm font-semibold text-[#FAFAFA] tracking-tight truncate">
-            {current.title}
-          </h1>
-          {current.subtitle ? (
-            <p className="hidden sm:block text-[11px] text-[#71717A] truncate">
-              {current.subtitle}
-            </p>
-          ) : null}
-        </div>
-      </div>
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <RuntimeBadge onOpenWizard={() => setShowRuntimeWizard(true)} />
+          <HealthBadge />
 
-      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-        <HealthBadge />
-
-        <div className="hidden sm:block h-4 w-px bg-[#27272A]" aria-hidden="true" />
+          <div className="hidden sm:block h-4 w-px bg-[#27272A]" aria-hidden="true" />
 
         <a
           href="https://github.com/MohitJaiswal2507/CodePilot-"
@@ -119,5 +124,10 @@ export function Header({
         />
       </div>
     </header>
-  );
+    <RuntimeInstallWizard
+      isOpen={showRuntimeWizard}
+      onClose={() => setShowRuntimeWizard(false)}
+    />
+  </>
+);
 }

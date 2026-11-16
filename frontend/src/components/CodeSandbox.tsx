@@ -10,7 +10,7 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { ExecutionResult, runCode } from "@/services/api";
+import { ExecutionResult } from "@/services/api";
 import { ExecutionConsole } from "@/components/sandbox/ExecutionConsole";
 import {
   ExecutionErrorState,
@@ -22,6 +22,7 @@ import {
   mapSandboxApiError,
 } from "@/lib/sandbox";
 import { buildMonacoOptions, getEditorSettings } from "@/lib/editorSettings";
+import { useLocalRuntime } from "@/hooks/useLocalRuntime";
 
 const LANGUAGES: SupportedLanguage[] = ["python", "java", "cpp"];
 
@@ -37,6 +38,8 @@ export function CodeSandbox() {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
   const [executionError, setExecutionError] = useState<ExecutionErrorState | null>(null);
+
+  const { execute: executeRuntime, isPaired: isLocalPaired } = useLocalRuntime();
 
   const inFlightRef = useRef<boolean>(false);
 
@@ -100,7 +103,7 @@ export function CodeSandbox() {
     setExecutionResult(null);
 
     try {
-      const result = await runCode({
+      const { result } = await executeRuntime({
         code,
         language,
         stdin: stdinInput.length > 0 ? stdinInput : null,
@@ -237,9 +240,20 @@ export function CodeSandbox() {
             <span>•</span>
             <span className="font-mono text-zinc-400">{code.split("\n").length} lines</span>
           </div>
-          <div className="flex items-center gap-1.5 text-zinc-400">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Isolated Container • Network Disabled • Server Limits</span>
+          <div className="flex items-center gap-2 text-zinc-400">
+            {isLocalPaired ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-400 font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Local Docker Execution
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400">
+                <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
+                Isolated Container
+              </span>
+            )}
+            <span>•</span>
+            <span>Network Disabled • Limits Enforced</span>
           </div>
         </div>
       </div>

@@ -28,7 +28,6 @@ import {
   fetchCodeReviewHistory,
   fetchCodeReviewDetail,
   deleteCodeReview,
-  runCode,
   ExecutionResult,
   CodeReviewResult,
   CodeReviewResponse,
@@ -42,6 +41,7 @@ import {
   mapSandboxApiError,
 } from "@/lib/sandbox";
 import { buildMonacoOptions, getEditorSettings } from "@/lib/editorSettings";
+import { useLocalRuntime } from "@/hooks/useLocalRuntime";
 
 interface SampleCode {
   title: string;
@@ -183,6 +183,8 @@ export function CodeReviewer() {
   const [activeReviewId, setActiveReviewId] = useState<string | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "issues" | "complexity" | "edge_cases" | "corrected">("overview");
+
+  const { execute: executeRuntime, isPaired: isLocalPaired } = useLocalRuntime();
 
   // History state
   const [history, setHistory] = useState<CodeReviewHistoryItem[]>([]);
@@ -367,7 +369,7 @@ export function CodeReviewer() {
     setExecutionResult(null);
 
     try {
-      const result = await runCode({
+      const { result } = await executeRuntime({
         code,
         language,
         stdin: stdinInput.length > 0 ? stdinInput : null,
@@ -749,9 +751,20 @@ export function CodeReviewer() {
                 <span>•</span>
                 <span className="font-mono text-zinc-400">{code.split("\n").length} lines</span>
               </div>
-              <div className="flex items-center gap-1.5 text-zinc-400">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Isolated Sandbox Execution &amp; Static Analysis</span>
+              <div className="flex items-center gap-2 text-zinc-400">
+                {isLocalPaired ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-400 font-medium">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    Local Docker Execution
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400">
+                    <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
+                    Isolated Sandbox Execution
+                  </span>
+                )}
+                <span>•</span>
+                <span>Static Analysis</span>
               </div>
             </div>
           </div>
