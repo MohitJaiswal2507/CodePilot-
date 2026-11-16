@@ -19,6 +19,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Support both /health and /api/health for probes, monitoring, and frontend API clients
+app.include_router(health.router, tags=["System"])
 app.include_router(health.router, prefix="/api", tags=["System"])
 app.include_router(tutor.router, prefix="/api", tags=["AI Learning Tutor"])
 app.include_router(conversations.router, prefix="/api", tags=["Conversations"])
@@ -30,7 +32,8 @@ def root():
     return {
         "message": "Welcome to CodePilot AI API",
         "docs": "/docs",
-        "health": "/api/health",
+        "health": "/health",
+        "api_health": "/api/health",
         "tutor": "/api/tutor",
         "conversations": "/api/conversations",
         "reviewer": "/api/reviewer",

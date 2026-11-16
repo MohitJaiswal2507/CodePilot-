@@ -206,7 +206,28 @@ export class SandboxApiError extends Error {
   }
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export function getApiBaseUrl(): string {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (envUrl && !envUrl.includes("localhost") && !envUrl.includes("127.0.0.1")) {
+    return envUrl.replace(/\/+$/, "");
+  }
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    if (
+      host.endsWith(".vercel.app") ||
+      host === "codepilot-frontend.vercel.app" ||
+      (host !== "localhost" && host !== "127.0.0.1")
+    ) {
+      return "https://codepilot-backend.vercel.app";
+    }
+  }
+  if (envUrl) {
+    return envUrl.replace(/\/+$/, "");
+  }
+  return "http://localhost:8000";
+}
+
+export const API_BASE_URL = getApiBaseUrl();
 
 let inMemoryAuthToken: string | null = null;
 
@@ -296,11 +317,12 @@ export async function getAuthHeaders(extraHeaders: Record<string, string> = {}):
 
 export async function fetchBackendHealth(): Promise<HealthStatus> {
   const startTime = performance.now();
+  const baseUrl = getApiBaseUrl();
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4000);
 
-    const response = await fetch(`${API_BASE_URL}/api/health`, {
+    let response = await fetch(`${baseUrl}/health`, {
       method: "GET",
       signal: controller.signal,
       headers: {
@@ -308,6 +330,17 @@ export async function fetchBackendHealth(): Promise<HealthStatus> {
       },
       cache: "no-store",
     });
+
+    if (response.status === 404) {
+      response = await fetch(`${baseUrl}/api/health`, {
+        method: "GET",
+        signal: controller.signal,
+        headers: {
+          "Accept": "application/json",
+        },
+        cache: "no-store",
+      });
+    }
 
     clearTimeout(timeoutId);
     const latencyMs = Math.round(performance.now() - startTime);
@@ -349,7 +382,7 @@ export async function uploadDocument(file: File): Promise<UploadResponse> {
   formData.append("file", file);
 
   const authHeaders = await getAuthHeaders();
-  const response = await fetch(`${API_BASE_URL}/api/tutor/upload`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/tutor/upload`, {
     method: "POST",
     headers: authHeaders,
     body: formData,
@@ -367,7 +400,7 @@ export async function fetchDocuments(): Promise<DocumentListResponse> {
   const headers = await getAuthHeaders({
     "Accept": "application/json",
   });
-  const response = await fetch(`${API_BASE_URL}/api/tutor/documents`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/tutor/documents`, {
     method: "GET",
     headers,
     cache: "no-store",
@@ -385,7 +418,7 @@ export async function deleteDocument(documentName: string): Promise<{ status: st
   const headers = await getAuthHeaders({
     "Accept": "application/json",
   });
-  const response = await fetch(`${API_BASE_URL}/api/tutor/documents/${encodeURIComponent(documentName)}`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/tutor/documents/${encodeURIComponent(documentName)}`, {
     method: "DELETE",
     headers,
   });
@@ -402,7 +435,7 @@ export async function clearAllDocuments(): Promise<{ status: string; message: st
   const headers = await getAuthHeaders({
     "Accept": "application/json",
   });
-  const response = await fetch(`${API_BASE_URL}/api/tutor/documents`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/tutor/documents`, {
     method: "DELETE",
     headers,
   });
@@ -416,7 +449,7 @@ export async function clearAllDocuments(): Promise<{ status: string; message: st
 }
 
 export async function fetchAvailableModels(refresh: boolean = false): Promise<ModelListResponse> {
-  const url = `${API_BASE_URL}/api/tutor/models${refresh ? "?refresh=true" : ""}`;
+  const url = `${getApiBaseUrl()}/api/tutor/models${refresh ? "?refresh=true" : ""}`;
   const headers = await getAuthHeaders({
     "Accept": "application/json",
   });
@@ -446,7 +479,7 @@ export async function askTutor(
     "Content-Type": "application/json",
     "Accept": "application/json",
   });
-  const response = await fetch(`${API_BASE_URL}/api/tutor/query`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/tutor/query`, {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -487,7 +520,7 @@ export async function fetchConversations(
     "Accept": "application/json",
     "X-Session-ID": sid,
   });
-  const response = await fetch(`${API_BASE_URL}/api/conversations?limit=${limit}&offset=${offset}`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/conversations?limit=${limit}&offset=${offset}`, {
     method: "GET",
     headers,
     cache: "no-store",
@@ -510,7 +543,7 @@ export async function fetchConversation(
     "Accept": "application/json",
     "X-Session-ID": sid,
   });
-  const response = await fetch(`${API_BASE_URL}/api/conversations/${encodeURIComponent(conversationId)}`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/conversations/${encodeURIComponent(conversationId)}`, {
     method: "GET",
     headers,
     cache: "no-store",
@@ -534,7 +567,7 @@ export async function createConversation(
     "Accept": "application/json",
     "X-Session-ID": sid,
   });
-  const response = await fetch(`${API_BASE_URL}/api/conversations`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/conversations`, {
     method: "POST",
     headers,
     body: JSON.stringify(data || {}),
@@ -559,7 +592,7 @@ export async function updateConversation(
     "Accept": "application/json",
     "X-Session-ID": sid,
   });
-  const response = await fetch(`${API_BASE_URL}/api/conversations/${encodeURIComponent(conversationId)}`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/conversations/${encodeURIComponent(conversationId)}`, {
     method: "PATCH",
     headers,
     body: JSON.stringify(data),
@@ -582,7 +615,7 @@ export async function deleteConversation(
     "Accept": "application/json",
     "X-Session-ID": sid,
   });
-  const response = await fetch(`${API_BASE_URL}/api/conversations/${encodeURIComponent(conversationId)}`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/conversations/${encodeURIComponent(conversationId)}`, {
     method: "DELETE",
     headers,
   });
@@ -607,7 +640,7 @@ export async function sendConversationMessage(
     "Accept": "application/json",
     "X-Session-ID": sid,
   });
-  const response = await fetch(`${API_BASE_URL}/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -694,7 +727,7 @@ export async function submitCodeReview(
     "Accept": "application/json",
   });
 
-  const response = await fetch(`${API_BASE_URL}/api/reviewer/review`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/reviewer/review`, {
     method: "POST",
     headers,
     signal: resolvedOptions?.signal,
@@ -725,7 +758,7 @@ export async function fetchCodeReviewHistory(
   });
 
   const response = await fetch(
-    `${API_BASE_URL}/api/reviewer/history?limit=${limit}&offset=${offset}`,
+    `${getApiBaseUrl()}/api/reviewer/history?limit=${limit}&offset=${offset}`,
     {
       method: "GET",
       headers,
@@ -753,7 +786,7 @@ export async function fetchCodeReviewDetail(
   });
 
   const response = await fetch(
-    `${API_BASE_URL}/api/reviewer/${encodeURIComponent(id)}`,
+    `${getApiBaseUrl()}/api/reviewer/${encodeURIComponent(id)}`,
     {
       method: "GET",
       headers,
@@ -781,7 +814,7 @@ export async function deleteCodeReview(
   });
 
   const response = await fetch(
-    `${API_BASE_URL}/api/reviewer/${encodeURIComponent(id)}`,
+    `${getApiBaseUrl()}/api/reviewer/${encodeURIComponent(id)}`,
     {
       method: "DELETE",
       headers,
@@ -802,7 +835,7 @@ export async function clearCodeReviewHistory(options?: ReviewerRequestOptions): 
     "Accept": "application/json",
   });
 
-  const response = await fetch(`${API_BASE_URL}/api/reviewer`, {
+  const response = await fetch(`${getApiBaseUrl()}/api/reviewer`, {
     method: "DELETE",
     headers,
     signal: options?.signal,
@@ -850,7 +883,7 @@ export async function runCode(request: ExecutionRequest): Promise<ExecutionResul
 
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/api/v1/sandbox/execute`, {
+    response = await fetch(`${getApiBaseUrl()}/api/v1/sandbox/execute`, {
       method: "POST",
       headers,
       body: JSON.stringify({
