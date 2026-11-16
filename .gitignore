@@ -100,3 +100,5 @@ PRODUCT.md
 # CodePilot local runner runtime
 .codepilot-runtime/
 
+.vercel
+.env*
