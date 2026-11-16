@@ -1,12 +1,9 @@
-#internal configuration
-.agents/
-.agent/
-.agents.md
-
-# Local environment and secrets
+# Environment and Secrets (Never commit credentials)
 .env
 .env.*
 !.env.example
+*.env
+*.runner_secret
 
 # Python
 __pycache__/
@@ -22,13 +19,6 @@ downloads/
 !frontend/public/downloads/**
 eggs/
 .eggs/
-/lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -40,69 +30,54 @@ MANIFEST
 venv/
 ENV/
 env/
-env.bak/
-venv.bak/
 
-# Node
+# Node & Frontend
 *.tsbuildinfo
 node_modules/
 .next/
 out/
-dist/
-build/
 
-# Vercel
+# Vercel Deployment & Build Artifacts
 .vercel/
+.vercel
 
-# IDE and OS
-scratch/
-*.spec
+# IDE, OS, & Editors
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+*.spec
+!installer/*.spec
 
-# Logs and temporary files
-*.log
-tmp/
+# Temporary AI Agent Working Files, Logs & Scratchpads
+scratch/
+screenshot/
+screenshots/
 temp/
+tmp/
+*.log
 pip-log.txt
-pip-delete-this-directory.txt
+.agents/
+.agent/
+.agents.md
 
-# Test and coverage output
+# Test, Playwright & Coverage Output
 .coverage
 .coverage.*
 htmlcov/
 .tox/
 .nox/
 coverage.xml
-*.cover
-*.py.cover
 *.lcov
-.hypothesis/
+playwright-report/
+test-results/
 
-# Local databases and generated data
+# Local databases, ChromaDB caches & dev databases
 *.db
 *.sqlite3
 *.sqlite3-journal
 chroma_data/
 local_data/
-*.rdb
-*.aof
-
-# Evaluation artifacts & temporary vector stores
 backend/evals/results/
 backend/evals/tmp_chroma/
-
-# Local UI screenshots
-screenshot/
-screenshots/
-
-DESIGN.md
-PRODUCT.md
-
-# CodePilot local runner runtime
 .codepilot-runtime/
-
-.vercel
-.env*
