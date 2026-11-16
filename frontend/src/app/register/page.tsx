@@ -1,10 +1,11 @@
 "use client";
 
 import React, { useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { authClient } from "@/lib/auth/client";
 import { setApiAuthToken } from "@/services/api";
-import { Cpu, Lock, Mail, User, ArrowRight, Loader2, AlertCircle, CheckCircle2, Eye, EyeOff } from "lucide-react";
+import { Lock, Mail, User, ArrowRight, Loader2, AlertCircle, CheckCircle2, Eye, EyeOff } from "lucide-react";
 
 export default function RegisterPage() {
   const [name, setName] = useState("");
@@ -88,8 +89,8 @@ export default function RegisterPage() {
       <div className="w-full max-w-md relative z-10 my-8">
         {/* Brand & Header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-[#181C25] border border-white/[0.1] text-[#3B82F6] mb-4 shadow-lg shadow-black/40">
-            <Cpu className="w-6 h-6 text-[#3B82F6]" />
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-[#181C25] border border-white/[0.1] mb-4 shadow-lg shadow-black/40 p-2">
+            <Image src="/codepilot-icon.svg" alt="CodePilot logo" width={32} height={32} priority className="w-full h-full object-contain" />
           </div>
           <h1 className="text-2xl font-bold text-[#F4F4F5] tracking-tight">Create your account</h1>
           <p className="text-xs text-[#A1A1AA] mt-1.5">Get started with AI-driven development and learning</p>

@@ -1,11 +1,11 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
   BookOpen,
   Code2,
-  Cpu,
   LayoutDashboard,
   Loader2,
   LogOut,
@@ -223,9 +223,14 @@ export function Sidebar({
         >
           {!isCompact && (
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-7 h-7 rounded-md bg-[#181C25] border border-[#272B36] flex items-center justify-center text-[#3B82F6] shrink-0">
-                <Cpu className="w-4 h-4" />
-              </div>
+              <Image
+                src="/codepilot-icon.svg"
+                alt="CodePilot logo"
+                width={28}
+                height={28}
+                priority
+                className="w-7 h-7 rounded-lg object-contain shrink-0 shadow-md shadow-blue-500/10"
+              />
               <span className="font-semibold tracking-tight text-[#F4F4F5] text-sm truncate">
                 CodePilot
               </span>

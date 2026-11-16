@@ -19,8 +19,12 @@ export const metadata: Metadata = {
   },
   description: "AI-powered learning, multi-stage code review, and isolated execution workbench for developers.",
   icons: {
-    icon: "/icon.svg",
-    apple: "/icon.svg",
+    icon: [
+      { url: "/codepilot-icon.svg", type: "image/svg+xml" },
+      { url: "/icon.svg", type: "image/svg+xml" },
+    ],
+    shortcut: "/codepilot-icon.svg",
+    apple: "/codepilot-icon.svg",
   },
 };
 
