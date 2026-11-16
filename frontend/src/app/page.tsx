@@ -112,17 +112,17 @@ export default function Home() {
 
         <main
           className={`flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 ${
-            currentTab === "code-review"
+            currentTab === "code-review" || currentTab === "sandbox"
               ? "py-2.5 sm:py-3 lg:py-3 flex flex-col min-h-0"
-              : currentTab === "sandbox"
-              ? "py-3 sm:py-3.5 lg:py-3.5"
               : "py-5 sm:py-6 lg:py-7"
           }`}
         >
           <div
             key={currentTab}
             className={`max-w-7xl mx-auto w-full animate-cp-fade-up ${
-              currentTab === "code-review" ? "flex-1 flex flex-col min-h-0 h-full" : ""
+              currentTab === "code-review" || currentTab === "sandbox"
+                ? "flex-1 flex flex-col min-h-0 h-full"
+                : ""
             }`}
           >
             {currentTab === "dashboard" && (

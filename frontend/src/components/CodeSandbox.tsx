@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useRef, useState } from "react";
-import Editor from "@monaco-editor/react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
+import Editor, { OnMount } from "@monaco-editor/react";
 import {
   FileCode,
   Play,
@@ -44,6 +44,24 @@ export function CodeSandbox() {
   const inFlightRef = useRef<boolean>(false);
 
   const stdinByteLength = new TextEncoder().encode(stdinInput).length;
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+
+  const handleEditorDidMount: OnMount = useCallback((editor) => {
+    editorRef.current = editor;
+    setTimeout(() => {
+      editor.layout();
+    }, 50);
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (editorRef.current) {
+        editorRef.current.layout?.();
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   const handleLanguageChange = (newLang: SupportedLanguage) => {
     if (isRunning || newLang === language) return;
@@ -122,11 +140,11 @@ export function CodeSandbox() {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="flex-1 flex flex-col min-h-0 h-full lg:h-[calc(100vh-5rem)] lg:max-h-[calc(100vh-5rem)] lg:grid lg:grid-rows-sandbox-layout gap-3.5">
       {/* Monaco Editor Panel */}
-      <div className="rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col">
+      <div className="rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col h-full min-h-0 flex-1">
         {/* Editor Toolbar: Samples on Left & Action Buttons to the Left of main.py/java/cpp on Right */}
-        <div className="flex flex-wrap items-center justify-between gap-2.5 px-3.5 py-2 border-b border-[#272B36] bg-[#0d0f17]">
+        <div className="flex flex-wrap items-center justify-between gap-2.5 px-3.5 py-2 border-b border-[#272B36] bg-[#0d0f17] shrink-0">
           {/* Left: Samples */}
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-[11px] font-medium text-zinc-500 shrink-0 hidden sm:inline">
@@ -222,19 +240,21 @@ export function CodeSandbox() {
         </div>
 
         {/* Monaco Editor Container */}
-        <div className="h-[270px] lg:h-[285px] xl:h-[305px] w-full relative bg-[#080A10]">
+        <div className="flex-1 min-h-[220px] w-full relative bg-[#080A10]">
           <Editor
             height="100%"
+            width="100%"
             language={MONACO_LANG_MAP[language]}
             theme="vs-dark"
             value={code}
             onChange={(val) => setCode(val || "")}
+            onMount={handleEditorDidMount}
             options={buildMonacoOptions(editorSettings, { readOnly: isRunning })}
           />
         </div>
 
         {/* Editor Footer */}
-        <div className="px-3.5 py-1.5 bg-[#0d0f17] border-t border-white/[0.08] flex items-center justify-between text-[11px] text-zinc-500">
+        <div className="px-3.5 py-1.5 bg-[#0d0f17] border-t border-white/[0.08] flex items-center justify-between text-[11px] text-zinc-500 shrink-0">
           <div className="flex items-center gap-3">
             <span className="font-mono text-zinc-400">{code.length} characters</span>
             <span>•</span>
@@ -259,52 +279,54 @@ export function CodeSandbox() {
       </div>
 
       {/* Sandbox Execution Workspace: Standard Input & Console Output */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-stretch min-h-0">
         {/* Standard Input (stdin) Panel (4 cols) */}
-        <div className="lg:col-span-4 rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col">
-          <div className="px-3.5 py-2 border-b border-[#272B36] bg-[#0d0f17] flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <FileCode className="w-4 h-4 text-[#3B82F6]" />
-              <h2 className="text-xs font-semibold text-white">Standard Input (stdin)</h2>
+        <div className="lg:col-span-4 min-w-0 flex flex-col h-full min-h-0">
+          <div className="rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col h-full min-h-0 flex-1">
+            <div className="px-3.5 py-2 border-b border-[#272B36] bg-[#0d0f17] flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2">
+                <FileCode className="w-4 h-4 text-[#3B82F6]" />
+                <h2 className="text-xs font-semibold text-white">Standard Input (stdin)</h2>
+              </div>
+              {stdinInput.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setStdinInput("")}
+                  disabled={isRunning}
+                  className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed"
+                >
+                  Clear input
+                </button>
+              )}
             </div>
-            {stdinInput.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setStdinInput("")}
+
+            <div className="p-2.5 flex-1 min-h-0 flex flex-col">
+              <textarea
+                value={stdinInput}
+                onChange={(e) => setStdinInput(e.target.value)}
                 disabled={isRunning}
-                className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:opacity-40 transition-colors cursor-pointer disabled:cursor-not-allowed"
+                placeholder="Optional program input passed via stdin..."
+                rows={4}
+                aria-label="Standard input"
+                className="w-full flex-1 h-full min-h-[90px] rounded-lg bg-[#080A10] border border-white/[0.08] focus:border-[#3B82F6] focus:outline-none focus:ring-1 focus:ring-[#3B82F6]/50 p-2.5 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 resize-none disabled:opacity-60"
+              />
+            </div>
+
+            <div className="px-3.5 py-1.5 bg-[#0d0f17] border-t border-white/[0.08] flex items-center justify-between text-[11px] text-zinc-500 shrink-0">
+              <span
+                className={`font-mono ${
+                  stdinByteLength > 65536 ? "text-rose-400 font-bold" : "text-zinc-400"
+                }`}
               >
-                Clear input
-              </button>
-            )}
-          </div>
-
-          <div className="p-2.5 flex-1 flex flex-col">
-            <textarea
-              value={stdinInput}
-              onChange={(e) => setStdinInput(e.target.value)}
-              disabled={isRunning}
-              placeholder="Optional program input passed via stdin..."
-              rows={4}
-              aria-label="Standard input"
-              className="w-full flex-1 h-[96px] min-h-[85px] max-h-[110px] rounded-lg bg-[#080A10] border border-white/[0.08] focus:border-[#3B82F6] focus:outline-none focus:ring-1 focus:ring-[#3B82F6]/50 p-2.5 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 resize-y disabled:opacity-60"
-            />
-          </div>
-
-          <div className="px-3.5 py-1.5 bg-[#0d0f17] border-t border-white/[0.08] flex items-center justify-between text-[11px] text-zinc-500">
-            <span
-              className={`font-mono ${
-                stdinByteLength > 65536 ? "text-rose-400 font-bold" : "text-zinc-400"
-              }`}
-            >
-              {stdinByteLength.toLocaleString()} / 65,536 bytes
-            </span>
-            <span>Passed via standard input</span>
+                {stdinByteLength.toLocaleString()} / 65,536 bytes
+              </span>
+              <span>Passed via standard input</span>
+            </div>
           </div>
         </div>
 
         {/* Execution Console Output Panel (8 cols) */}
-        <div className="lg:col-span-8">
+        <div className="lg:col-span-8 min-w-0 flex flex-col h-full min-h-0">
           <ExecutionConsole
             language={language}
             isRunning={isRunning}

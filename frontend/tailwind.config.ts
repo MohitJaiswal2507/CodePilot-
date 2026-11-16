@@ -60,6 +60,7 @@ const config: Config = {
       },
       gridTemplateRows: {
         'reviewer-layout': 'minmax(0, 7fr) minmax(0, 3fr)',
+        'sandbox-layout': 'minmax(0, 60fr) minmax(0, 40fr)',
       },
       borderRadius: {
         sm: "var(--radius-sm)",

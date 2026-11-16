@@ -47,6 +47,7 @@ interface SampleCode {
   title: string;
   code: string;
   description: string;
+  stdin?: string;
 }
 
 const SAMPLE_CODES: Record<SupportedLanguage, SampleCode[]> = {
@@ -54,7 +55,10 @@ const SAMPLE_CODES: Record<SupportedLanguage, SampleCode[]> = {
     {
       title: "Binary Search (Buggy Off-by-One)",
       description: "Infinite loop condition & missing edge-case check",
-      code: `def binary_search(arr, target):
+      stdin: "7",
+      code: `import sys
+
+def binary_search(arr, target):
     left = 0
     right = len(arr)  # Bug: should be len(arr) - 1 for inclusive indexing
     
@@ -67,51 +71,98 @@ const SAMPLE_CODES: Record<SupportedLanguage, SampleCode[]> = {
         else:
             right = mid  # Bug: should be mid - 1 to avoid infinite loop
             
-    return -1`,
+    return -1
+
+if __name__ == "__main__":
+    nums = [1, 3, 5, 7, 9, 11, 13]
+    stdin_target = sys.stdin.read().strip()
+    target = int(stdin_target) if stdin_target.isdigit() else 7
+
+    print(f"Sorted array: {nums}")
+    print(f"Searching for target: {target}")
+    result = binary_search(nums, target)
+    print(f"Target found at index: {result}")`,
     },
     {
       title: "Two Sum (Quadratic O(N^2))",
       description: "Unnecessary nested loop that can be optimized to O(N)",
+      stdin: "",
       code: `def two_sum(nums, target):
-    # Quadratic brute force approach
+    # Quadratic brute force approach: O(N^2)
     n = len(nums)
     for i in range(n):
         for j in range(i + 1, n):
             if nums[i] + nums[j] == target:
                 return [i, j]
-    return []`,
+    return []
+
+if __name__ == "__main__":
+    numbers = [2, 7, 11, 15]
+    target = 9
+    print(f"Array: {numbers}, Target: {target}")
+    indices = two_sum(numbers, target)
+    print(f"Indices: {indices}")`,
     },
     {
       title: "Recursive Fibonacci (Exponential O(2^N))",
       description: "Exponential recursion without memoization",
+      stdin: "",
       code: `def fibonacci(n):
+    # Exponential recursion: O(2^N) without memoization
     if n <= 0:
         return 0
     if n == 1:
         return 1
-    return fibonacci(n - 1) + fibonacci(n - 2)`,
+    return fibonacci(n - 1) + fibonacci(n - 2)
+
+if __name__ == "__main__":
+    n = 8
+    print(f"Calculating Fibonacci({n}) using naive recursion...")
+    result = fibonacci(n)
+    print(f"Fibonacci({n}) = {result}")`,
     },
   ],
   java: [
     {
       title: "String Palindrome Check (Buggy)",
       description: "String comparison using == instead of .equals()",
-      code: `public class PalindromeCheck {
+      stdin: "Racecar",
+      code: `import java.util.Scanner;
+
+public class PalindromeCheck {
     public static boolean isPalindrome(String s) {
         if (s == null) return false;
         String clean = s.toLowerCase().replaceAll("[^a-zA-Z0-9]", "");
         String reversed = new StringBuilder(clean).reverse().toString();
-        // Bug: uses reference equality instead of content equality
+        // Bug: uses reference equality (==) instead of content equality (.equals())
         return clean == reversed;
+    }
+
+    public static void main(String[] args) {
+        Scanner scanner = new Scanner(System.in);
+        String input = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
+        if (input.isEmpty()) {
+            input = "Racecar";
+        }
+        boolean result = isPalindrome(input);
+        System.out.println("Testing palindrome: \\"" + input + "\\"");
+        System.out.println("Result: " + result);
+        if (!result) {
+            System.out.println("Notice: Comparison returned false because == checks reference identity, not string value!");
+        }
     }
 }`,
     },
     {
       title: "Array Max Finder",
       description: "Unchecked empty array causing ArrayIndexOutOfBoundsException",
-      code: `public class ArrayUtils {
+      stdin: "5\\n3 7 2 9 5",
+      code: `import java.util.Arrays;
+import java.util.Scanner;
+
+public class ArrayUtils {
     public static int findMax(int[] arr) {
-        // Bug: no validation for empty or null array
+        // Bug: no validation for null or empty array (arr[0] throws on empty array)
         int max = arr[0];
         for (int i = 1; i < arr.length; i++) {
             if (arr[i] > max) {
@@ -120,6 +171,24 @@ const SAMPLE_CODES: Record<SupportedLanguage, SampleCode[]> = {
         }
         return max;
     }
+
+    public static void main(String[] args) {
+        Scanner scanner = new Scanner(System.in);
+        int[] numbers;
+        if (scanner.hasNextInt()) {
+            int n = scanner.nextInt();
+            numbers = new int[n];
+            for (int i = 0; i < n; i++) {
+                numbers[i] = scanner.nextInt();
+            }
+        } else {
+            numbers = new int[]{3, 7, 2, 9, 5};
+        }
+
+        System.out.println("Input array: " + Arrays.toString(numbers));
+        int maxVal = findMax(numbers);
+        System.out.println("Max element: " + maxVal);
+    }
 }`,
     },
   ],
@@ -127,6 +196,7 @@ const SAMPLE_CODES: Record<SupportedLanguage, SampleCode[]> = {
     {
       title: "Memory Leak & Raw Pointer",
       description: "Dynamically allocated buffer without delete[]",
+      stdin: "5",
       code: `#include <iostream>
 #include <vector>
 
@@ -134,25 +204,57 @@ void processData(int size) {
     // Memory leak: allocated on heap with new[] but never deleted
     int* buffer = new int[size];
     for (int i = 0; i < size; ++i) {
-        buffer[i] = i * 2;
+        buffer[i] = (i + 1) * 10;
     }
-    std::cout << "Processed " << size << " elements." << std::endl;
-    // Missing delete[] buffer;
+    std::cout << "Allocated and processed " << size << " integers in buffer." << std::endl;
+    std::cout << "Buffer contents: ";
+    for (int i = 0; i < size; ++i) {
+        std::cout << buffer[i] << " ";
+    }
+    std::cout << std::endl;
+    // Missing: delete[] buffer;
+}
+
+int main() {
+    int count = 5;
+    if (std::cin >> count) {
+        // Read buffer size from standard input if provided
+    }
+    std::cout << "Starting memory test with size = " << count << std::endl;
+    processData(count);
+    std::cout << "Execution complete (raw heap memory leaked)." << std::endl;
+    return 0;
 }`,
     },
     {
       title: "Vector Subscript Out of Range",
       description: "Loop bounds off by one accessing vec[vec.size()]",
-      code: `#include <vector>
+      stdin: "",
+      code: `#include <iostream>
+#include <vector>
 #include <numeric>
 
 long long sumElements(const std::vector<int>& vec) {
     long long total = 0;
-    // Bug: loop condition <= vec.size() causes out-of-bounds access
+    // Bug: loop condition <= vec.size() causes out-of-bounds access at index vec.size()
     for (size_t i = 0; i <= vec.size(); ++i) {
         total += vec[i];
     }
     return total;
+}
+
+int main() {
+    std::vector<int> numbers = {10, 20, 30, 40, 50};
+    std::cout << "Vector elements (" << numbers.size() << " items): ";
+    for (int num : numbers) {
+        std::cout << num << " ";
+    }
+    std::cout << std::endl;
+
+    std::cout << "Summing vector with boundary loop..." << std::endl;
+    long long total = sumElements(numbers);
+    std::cout << "Computed total: " << total << std::endl;
+    return 0;
 }`,
     },
   ],
@@ -173,7 +275,9 @@ export function CodeReviewer() {
   const [editorSettings] = useState(() => getEditorSettings());
   const [language, setLanguage] = useState<SupportedLanguage>(editorSettings.defaultLanguage);
   const [code, setCode] = useState<string>(SAMPLE_CODES[editorSettings.defaultLanguage][0].code);
-  const [stdinInput, setStdinInput] = useState<string>("");
+  const [stdinInput, setStdinInput] = useState<string>(
+    SAMPLE_CODES[editorSettings.defaultLanguage][0].stdin ?? ""
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -330,12 +434,14 @@ export function CodeReviewer() {
     // Suggest sample for the new language
     if (SAMPLE_CODES[newLang] && SAMPLE_CODES[newLang].length > 0) {
       setCode(SAMPLE_CODES[newLang][0].code);
+      setStdinInput(SAMPLE_CODES[newLang][0].stdin ?? "");
     }
   };
 
   const handleLoadSample = (sample: SampleCode) => {
     invalidateActiveReview();
     setCode(sample.code);
+    setStdinInput(sample.stdin ?? "");
     setErrorMessage(null);
   };
 
