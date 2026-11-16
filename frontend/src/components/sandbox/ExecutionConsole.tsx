@@ -45,9 +45,9 @@ export function ExecutionConsole({
   };
 
   return (
-    <div className="rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col h-full">
+    <div className="rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col h-full min-h-0">
       {/* Console Header */}
-      <div className="px-3.5 py-2 border-b border-[#272B36] bg-[#0d0f17] flex flex-wrap items-center justify-between gap-2.5">
+      <div className="px-3.5 py-2 border-b border-[#272B36] bg-[#0d0f17] flex flex-wrap items-center justify-between gap-2.5 shrink-0">
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="flex items-center gap-2">
             <Terminal className="w-4 h-4 text-emerald-400" />
@@ -133,7 +133,7 @@ export function ExecutionConsole({
       </div>
 
       {/* Console Body */}
-      <div className="p-3 flex-1 h-[120px] max-h-[145px] overflow-y-auto space-y-2.5 bg-[#080A10]">
+      <div className="p-3 flex-1 min-h-[120px] overflow-y-auto space-y-2.5 bg-[#080A10]">
         {/* Running State */}
         {isRunning && (
           <div className="py-4 flex flex-col items-center justify-center text-center space-y-1.5">
