@@ -171,9 +171,17 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         while True:
             attempts += 1
             try:
+                # Convert string list into explicit list of Content objects so Google GenAI
+                # treats each item as an independent text instead of multi-part segments of a single content
+                content_items = [
+                    types.Content(parts=[types.Part.from_text(text=item)])
+                    if isinstance(item, str)
+                    else item
+                    for item in contents
+                ]
                 response = client.models.embed_content(
                     model=self._model,
-                    contents=contents,
+                    contents=content_items,
                     config=config,
                 )
                 embeddings = self._extract_embeddings(response)
