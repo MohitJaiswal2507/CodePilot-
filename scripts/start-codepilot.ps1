@@ -500,6 +500,17 @@ if (-not $tunnelUrl -and -not $DryRun) {
             # Flush local DNS cache if "No such host is known" to avoid waiting out Windows DNS negative cache
             if ($lastError -match "No such host is known") {
                 Clear-DnsClientCache -ErrorAction SilentlyContinue
+                # Fallback probe via Cloudflare DoH (1.1.1.1) in case local router negatively caches NXDOMAIN
+                try {
+                    $dohRaw = & curl.exe --doh-url https://1.1.1.1/dns-query -s --max-time 4 "$extractedUrl/health"
+                    if ($dohRaw) {
+                        $dohJson = $dohRaw | ConvertFrom-Json -ErrorAction SilentlyContinue
+                        if ($dohJson.status -eq "ok") {
+                            $tunnelHealthy = $true
+                            break
+                        }
+                    }
+                } catch {}
             }
 
             if ($attempt -eq 1 -or $attempt % 4 -eq 0 -or $elapsed -ge 15) {
@@ -518,6 +529,7 @@ if (-not $tunnelUrl -and -not $DryRun) {
     Write-Success "Public tunnel is healthy and routing traffic to 127.0.0.1:$Port."
 
     # Verify public unauthenticated /execute
+    $unauthRejected = $false
     try {
         $null = Invoke-RestMethod -Uri "$extractedUrl/execute" -Method Post -Body '{"code":"print(1)","language":"python"}' -ContentType "application/json" -TimeoutSec 5 -ErrorAction Stop
         Dump-CloudflaredDiagnostics -LastError "Security violation: Public tunnel accepted unauthenticated execution!" -Proc $tunnelProc
@@ -525,10 +537,20 @@ if (-not $tunnelUrl -and -not $DryRun) {
         Write-Fail "Security violation: Public tunnel accepted unauthenticated execution!"
     } catch {
         if ($_.Exception.Response.StatusCode.value__ -eq 401) {
-            Write-Success "Security verified: Public tunnel correctly enforces HMAC authentication (HTTP 401)."
+            $unauthRejected = $true
         } else {
-            Write-WarnMsg "Public tunnel unauthenticated execution returned HTTP $($_.Exception.Response.StatusCode.value__) instead of 401."
+            # Try DoH fallback for unauthenticated test if local DNS failed
+            $statusCode = & curl.exe --doh-url https://1.1.1.1/dns-query -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"code":"print(1)","language":"python"}' "$extractedUrl/execute"
+            if ($statusCode -eq "401") {
+                $unauthRejected = $true
+            } else {
+                Write-WarnMsg "Public tunnel unauthenticated execution returned HTTP $statusCode instead of 401."
+            }
         }
+    }
+
+    if ($unauthRejected) {
+        Write-Success "Security verified: Public tunnel correctly enforces HMAC authentication (HTTP 401)."
     }
 
     $tunnelUrl = $extractedUrl
