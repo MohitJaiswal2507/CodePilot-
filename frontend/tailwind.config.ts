@@ -54,6 +54,10 @@ const config: Config = {
           "monospace",
         ],
       },
+      gridTemplateColumns: {
+        'reviewer-top': 'minmax(0, 11fr) minmax(0, 9fr)',
+        'reviewer-bottom': 'minmax(0, 3fr) minmax(0, 7fr)',
+      },
       borderRadius: {
         sm: "var(--radius-sm)",
         md: "var(--radius-md)",

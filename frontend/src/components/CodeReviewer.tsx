@@ -579,10 +579,10 @@ export function CodeReviewer() {
 
   return (
     <div className="space-y-3">
-      {/* Main Split Grid: Editor (Left) & Results (Right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
-        {/* Left Column: Monaco Editor (6 cols) */}
-        <div className="lg:col-span-6 flex flex-col">
+      {/* Main Split Grid: Editor (Left ~55%) & Results (Right ~45%) */}
+      <div className="grid grid-cols-1 lg:grid-cols-reviewer-top gap-3.5 items-stretch">
+        {/* Left Column: Monaco Editor (~55%) */}
+        <div className="min-w-0 flex flex-col">
           <div className="rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col flex-1">
             {/* Editor Toolbar */}
             <div className="border-b border-[#272B36] bg-[#0d0f17] px-3.5 py-2 flex flex-col gap-2">
@@ -711,7 +711,7 @@ export function CodeReviewer() {
             </div>
 
             {/* Monaco Editor Container */}
-            <div className="h-[240px] lg:h-[250px] xl:h-[265px] w-full relative bg-[#080A10]">
+            <div className="h-[255px] lg:h-[270px] xl:h-[285px] w-full relative bg-[#080A10]">
               <Editor
                 height="100%"
                 language={MONACO_LANG_MAP[language]}
@@ -748,11 +748,11 @@ export function CodeReviewer() {
           )}
         </div>
 
-        {/* Right Column: Review Results Panel (6 cols) */}
-        <div className="lg:col-span-6 flex flex-col">
+        {/* Right Column: Review Results Panel (~45%) */}
+        <div className="min-w-0 flex flex-col">
           {/* If no review yet and not submitting */}
           {!reviewResult && !isSubmitting && (
-            <div className="rounded-xl border border-dashed border-white/[0.10] bg-[#111319]/40 p-6 flex flex-col items-center justify-center text-center space-y-3 h-[344px] lg:h-[354px] xl:h-[369px]">
+            <div className="rounded-xl border border-dashed border-white/[0.10] bg-[#111319]/40 p-6 flex flex-col items-center justify-center text-center space-y-3 h-full min-h-[350px] lg:min-h-[365px] xl:min-h-[380px] flex-1">
               <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[#3B82F6] flex items-center justify-center shadow-inner">
                 <Sparkles className="w-4 h-4" />
               </div>
@@ -776,7 +776,7 @@ export function CodeReviewer() {
 
           {/* Loading State Spinner Card */}
           {isSubmitting && (
-            <div className="rounded-xl border border-white/[0.08] bg-[#111319] p-6 flex flex-col items-center justify-center text-center space-y-3 h-[344px] lg:h-[354px] xl:h-[369px]">
+            <div className="rounded-xl border border-white/[0.08] bg-[#111319] p-6 flex flex-col items-center justify-center text-center space-y-3 h-full min-h-[350px] lg:min-h-[365px] xl:min-h-[380px] flex-1">
               <div className="relative">
                 <div className="w-14 h-14 rounded-xl bg-[#3B82F6]/15 border border-[#3B82F6]/30 flex items-center justify-center text-[#3B82F6] animate-pulse">
                   <Layers className="w-7 h-7" />
@@ -798,7 +798,7 @@ export function CodeReviewer() {
 
           {/* Completed Review Panel */}
           {reviewResult && !isSubmitting && (
-            <div className="rounded-xl border border-[#272B36] bg-[#111319] flex flex-col flex-1 overflow-hidden h-[344px] lg:h-[354px] xl:h-[369px]">
+            <div className="rounded-xl border border-[#272B36] bg-[#111319] flex flex-col flex-1 overflow-hidden h-full min-h-[350px] lg:min-h-[365px] xl:min-h-[380px]">
               {/* Header: Score & Overall Assessment */}
               <div className="px-4 py-2.5 border-b border-[#272B36] bg-[#0d0f17] flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -1104,48 +1104,50 @@ export function CodeReviewer() {
         </div>
       </div>
 
-      {/* Sandbox Execution Workspace: Standard Input & Console Output */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
-        {/* Standard Input (stdin) Panel (4 cols) */}
-        <div className="lg:col-span-4 rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col">
-          <div className="px-3.5 py-2 border-b border-[#272B36] bg-[#0d0f17] flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <FileCode className="w-4 h-4 text-[#3B82F6]" />
-              <h2 className="text-xs font-semibold text-white">Standard Input (stdin)</h2>
+      {/* Bottom row: Standard Input (~30%) & Execution Console (~70%) */}
+      <div className="grid grid-cols-1 lg:grid-cols-reviewer-bottom gap-3.5 items-stretch">
+        {/* Standard Input (stdin) Panel (~30%) */}
+        <div className="min-w-0 flex flex-col">
+          <div className="rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col h-full">
+            <div className="px-3.5 py-2 border-b border-[#272B36] bg-[#0d0f17] flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <FileCode className="w-4 h-4 text-[#3B82F6]" />
+                <h2 className="text-xs font-semibold text-white">Standard Input (stdin)</h2>
+              </div>
+              {stdinInput.length > 0 && (
+                <button
+                  onClick={() => setStdinInput("")}
+                  disabled={isRunning}
+                  className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:opacity-40 transition-colors cursor-pointer"
+                >
+                  Clear input
+                </button>
+              )}
             </div>
-            {stdinInput.length > 0 && (
-              <button
-                onClick={() => setStdinInput("")}
+
+            <div className="p-2.5 flex-1 flex flex-col">
+              <textarea
+                value={stdinInput}
+                onChange={(e) => setStdinInput(e.target.value)}
                 disabled={isRunning}
-                className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:opacity-40 transition-colors cursor-pointer"
-              >
-                Clear input
-              </button>
-            )}
-          </div>
+                placeholder="Optional program input passed via stdin..."
+                rows={4}
+                aria-label="Standard input"
+                className="w-full flex-1 h-[96px] min-h-[85px] max-h-[110px] rounded-lg bg-[#080A10] border border-white/[0.08] focus:border-[#3B82F6] focus:outline-none focus:ring-1 focus:ring-[#3B82F6]/50 p-2.5 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 resize-y disabled:opacity-60"
+              />
+            </div>
 
-          <div className="p-2.5 flex-1 flex flex-col">
-            <textarea
-              value={stdinInput}
-              onChange={(e) => setStdinInput(e.target.value)}
-              disabled={isRunning}
-              placeholder="Optional program input passed via stdin..."
-              rows={4}
-              aria-label="Standard input"
-              className="w-full flex-1 h-[96px] min-h-[85px] max-h-[110px] rounded-lg bg-[#080A10] border border-white/[0.08] focus:border-[#3B82F6] focus:outline-none focus:ring-1 focus:ring-[#3B82F6]/50 p-2.5 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 resize-y disabled:opacity-60"
-            />
-          </div>
-
-          <div className="px-3.5 py-1.5 bg-[#0d0f17] border-t border-white/[0.08] flex items-center justify-between text-[11px] text-zinc-500">
-            <span className={`font-mono ${stdinByteLength > 65536 ? "text-rose-400" : "text-zinc-400"}`}>
-              {stdinByteLength.toLocaleString()} / 65,536 bytes
-            </span>
-            <span>Passed separately from source</span>
+            <div className="px-3.5 py-1.5 bg-[#0d0f17] border-t border-white/[0.08] flex items-center justify-between text-[11px] text-zinc-500">
+              <span className={`font-mono ${stdinByteLength > 65536 ? "text-rose-400" : "text-zinc-400"}`}>
+                {stdinByteLength.toLocaleString()} / 65,536 bytes
+              </span>
+              <span>Passed separately from source</span>
+            </div>
           </div>
         </div>
 
-        {/* Execution Console Output Panel (8 cols) */}
-        <div className="lg:col-span-8">
+        {/* Execution Console Output Panel (~70%) */}
+        <div className="min-w-0 flex flex-col">
           <ExecutionConsole
             language={language}
             isRunning={isRunning}

@@ -45,7 +45,7 @@ export function ExecutionConsole({
   };
 
   return (
-    <div className="rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col">
+    <div className="rounded-xl border border-[#272B36] bg-[#111319] overflow-hidden flex flex-col h-full">
       {/* Console Header */}
       <div className="px-3.5 py-2 border-b border-[#272B36] bg-[#0d0f17] flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex flex-wrap items-center gap-2.5">
